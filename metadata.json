@@ -1,0 +1,6 @@
+{
+  "name": "بوصلة التطبيقات",
+  "description": "ابنِ تطبيقك بوصف واحد — حوّل فكرتك المكتوبة بالعربية إلى تطبيق أندرويد حقيقي جاهز للتنزيل بصيغة APK.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
