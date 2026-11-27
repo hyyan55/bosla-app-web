@@ -255,7 +255,7 @@ export function AdminPanel() {
         <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-lg overflow-hidden">
           <div className="bg-[#101D35] px-6 py-6 text-center text-white">
             <div className="inline-flex p-1.5 rounded-2xl border border-[#D5B45C]/40 bg-white/5 mb-3">
-              <BoslaLogo size={48} variant="white" />
+              <BoslaLogo size={48} variant="dark" />
             </div>
             <h1 className="text-lg font-extrabold">دخول المسؤول</h1>
             <p className="text-xs text-[#D5B45C] mt-1">لوحة إدارة بوصلة التطبيقات</p>
@@ -333,7 +333,7 @@ export function AdminPanel() {
       <aside className="lg:w-64 shrink-0 bg-[#101D35] text-white flex flex-col justify-between p-4">
         <div className="space-y-6">
           <div className="flex items-center gap-3 px-2 pt-1">
-            <BoslaLogo size={40} variant="white" />
+            <BoslaLogo size={40} variant="dark" />
             <div>
               <h1 className="text-sm font-extrabold">بوصلة التطبيقات</h1>
               <p className="text-[11px] text-[#D5B45C]">لوحة الإدارة</p>

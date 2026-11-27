@@ -24,20 +24,48 @@ const SUGGESTIONS = [
 ];
 
 const MAX_CHARS = 2000;
+const CHAT_STORAGE_KEY = 'bosla-chat-messages';
 
-export function ChatScreen() {
-  const { user, settings, refreshProfile, showToast } = useApp();
-  const navigate = useNavigate();
-
-  const [messages, setMessages] = useState<ChatMessage[]>([
+function createDefaultMessages(): ChatMessage[] {
+  return [
     {
       id: 'welcome',
       role: 'bot',
       text: 'أهلاً بك في بوصلة التطبيقات! صف لي فكرة تطبيقك بالعربية في رسالة واحدة، وسأحللها وأخبرك بالتقدير المناسب قبل البناء.',
       createdAt: new Date().toISOString(),
     },
-  ]);
-  const [hasInteracted, setHasInteracted] = useState(false);
+  ];
+}
+
+export function ChatScreen() {
+  const { user, settings, refreshProfile, showToast } = useApp();
+  const navigate = useNavigate();
+
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    try {
+      const saved = localStorage.getItem(CHAT_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed as ChatMessage[];
+        }
+      }
+    } catch {
+      // ignore corrupted storage
+    }
+    return createDefaultMessages();
+  });
+  const [hasInteracted, setHasInteracted] = useState(() =>
+    messages.some((m) => m.role === 'user'),
+  );
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages));
+    } catch {
+      // ignore storage quota errors
+    }
+  }, [messages]);
   const [input, setInput] = useState('');
   const [thinking, setThinking] = useState(false);
   const [thinkingStep, setThinkingStep] = useState<'analyzing' | 'estimating'>('analyzing');
@@ -189,7 +217,7 @@ export function ChatScreen() {
       {/* Top App Header */}
       <header className="shrink-0 bg-[#101D35] text-white px-4 py-3 flex items-center justify-between gap-2 shadow-sm">
         <div className="flex items-center gap-2.5 min-w-0">
-          <BoslaLogo size={38} variant="white" />
+          <BoslaLogo size={38} variant="dark" />
           <div className="min-w-0">
             <h1 className="text-sm font-extrabold leading-tight truncate">بوصلة التطبيقات</h1>
             <div className="flex items-center gap-1.5 text-[11px] text-slate-300 mt-0.5">
@@ -333,7 +361,7 @@ export function ChatScreen() {
                   </div>
 
                   <div className="shrink-0 mt-1">
-                    <BoslaLogo size={30} variant="navy" />
+                    <BoslaLogo size={30} variant="light" />
                   </div>
                 </div>
               )}
@@ -382,7 +410,7 @@ export function ChatScreen() {
                 {thinkingStep === 'analyzing' ? 'يحلل وصفك…' : 'يقدّر النقاط والسعر…'}
               </span>
             </div>
-            <BoslaLogo size={30} variant="navy" />
+            <BoslaLogo size={30} variant="light" />
           </motion.div>
         )}
 

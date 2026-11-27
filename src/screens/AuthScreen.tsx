@@ -162,7 +162,7 @@ export function AuthScreen() {
       {/* Fixed Navy Header (NOT inside scroll view) */}
       <header className="shrink-0 bg-[#101D35] px-6 pt-7 pb-6 flex flex-col items-center text-center">
         <div className="p-1.5 rounded-2xl border border-[#D5B45C]/40 bg-white/5 mb-3">
-          <BoslaLogo size={54} variant="white" />
+          <BoslaLogo size={54} variant="dark" />
         </div>
         <h1 className="text-xl font-extrabold text-white">بوصلة التطبيقات</h1>
         <p className="text-xs font-medium text-[#D5B45C] mt-1">

@@ -42,7 +42,7 @@ export function SplashScreen() {
           className="relative z-10 flex flex-col items-center"
         >
           <div className="p-2 rounded-[26px] border border-[#D5B45C]/40 bg-white/5 shadow-2xl mb-6">
-            <BoslaLogo size={84} variant="white" />
+            <BoslaLogo size={84} variant="dark" />
           </div>
 
           <h1 className="text-3xl font-extrabold text-white tracking-tight mb-2">

@@ -47,7 +47,7 @@ export function ResetPasswordScreen() {
   return (
     <MobileShell showBottomNav={false} bgTone="navy">
       <header className="shrink-0 bg-[#101D35] px-6 pt-8 pb-6 flex flex-col items-center text-center">
-        <BoslaLogo size={52} variant="white" />
+        <BoslaLogo size={52} variant="dark" />
         <h1 className="text-lg font-extrabold text-white mt-3">تعيين كلمة مرور جديدة</h1>
       </header>
 

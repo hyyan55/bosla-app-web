@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">بوصلة التطبيقات</string>
+    <string name="title_activity_main">بوصلة التطبيقات</string>
+    <string name="package_name">com.bosla.app</string>
+    <string name="custom_url_scheme">com.bosla.app</string>
+</resources>

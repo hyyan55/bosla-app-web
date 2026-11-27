@@ -9,6 +9,7 @@ import {
   ChevronLeft,
 } from 'lucide-react';
 import { MobileShell } from '../components/MobileShell';
+import { BoslaLogo } from '../components/BoslaLogo';
 import { OutlinedField } from '../components/OutlinedField';
 import { backend } from '../lib/backend';
 import { requestPushPermission } from '../lib/firebase';
@@ -75,7 +76,8 @@ export function ProfileScreen() {
   return (
     <MobileShell>
       {/* Header */}
-      <header className="shrink-0 bg-[#101D35] text-white px-5 py-4">
+      <header className="shrink-0 bg-[#101D35] text-white px-5 py-3.5 flex items-center gap-2.5">
+        <BoslaLogo size={32} variant="dark" />
         <h1 className="text-base font-extrabold">حسابي والإعدادات</h1>
       </header>
 

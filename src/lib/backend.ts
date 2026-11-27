@@ -805,8 +805,16 @@ export const backend = {
         });
         if (error) throw error;
         return data as {
-          action: 'clarify' | 'estimate';
+          action?: 'clarify' | 'estimate';
           reply: string;
+          estimate?: {
+            complexity?: ComplexityLevel;
+            points?: number;
+            price_sdg?: number;
+            features?: string[];
+            reasoning?: string;
+            reason?: string;
+          } | null;
           complexity?: ComplexityLevel;
           points?: number;
           price_sdg?: number;
@@ -814,6 +822,31 @@ export const backend = {
           reason?: string;
         };
       });
+
+      if (res.estimate && res.estimate.complexity) {
+        const complexity = res.estimate.complexity;
+        const points = res.estimate.points ?? COMPLEXITY_POINTS[complexity];
+        const priceSdg = res.estimate.price_sdg ?? points * settings.point_price_sdg;
+        return {
+          ok: true,
+          reply: res.reply,
+          estimate: {
+            complexity,
+            complexityLabel: COMPLEXITY_LABELS[complexity],
+            points,
+            priceSdg,
+            features: res.estimate.features || [],
+            reason:
+              res.estimate.reasoning ||
+              res.estimate.reason ||
+              'السبب: تقدير تلقائي بناءً على تفاصيل التطبيق.',
+          },
+        };
+      }
+
+      if (res.estimate === null) {
+        return { ok: true, reply: res.reply };
+      }
 
       if (res.action === 'estimate' && res.complexity) {
         const points = res.points ?? COMPLEXITY_POINTS[res.complexity];

@@ -12,6 +12,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { MobileShell } from '../components/MobileShell';
+import { BoslaLogo } from '../components/BoslaLogo';
 import { backend } from '../lib/backend';
 import { useApp } from '../context/AppContext';
 import type { PointsTransaction, TransactionType } from '../types';
@@ -77,8 +78,11 @@ export function WalletScreen() {
   return (
     <MobileShell>
       {/* Top Bar */}
-      <header className="shrink-0 bg-[#101D35] text-white px-5 py-4 flex items-center justify-between">
-        <h1 className="text-base font-extrabold">محفظتي</h1>
+      <header className="shrink-0 bg-[#101D35] text-white px-5 py-3.5 flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <BoslaLogo size={32} variant="dark" />
+          <h1 className="text-base font-extrabold">محفظتي</h1>
+        </div>
         <button
           type="button"
           onClick={loadWalletData}

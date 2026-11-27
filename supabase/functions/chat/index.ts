@@ -94,25 +94,36 @@ Deno.serve(async (req) => {
       ? `المحادثة السابقة:\n${historyText}\n\nالرسالة الجديدة:\n${message}`
       : `وصف المستخدم:\n${message}`;
 
-    const aiRes = await ai.models.generateContent({
-      model: 'gemini-4-hydrogen',
-      contents: prompt,
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTION,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            action: { type: Type.STRING },
-            reply: { type: Type.STRING },
-            complexity: { type: Type.STRING },
-            features: { type: Type.ARRAY, items: { type: Type.STRING } },
-            reason: { type: Type.STRING },
-          },
-          required: ['action', 'reply'],
+    const requestConfig = {
+      systemInstruction: SYSTEM_INSTRUCTION,
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          action: { type: Type.STRING },
+          reply: { type: Type.STRING },
+          complexity: { type: Type.STRING },
+          features: { type: Type.ARRAY, items: { type: Type.STRING } },
+          reason: { type: Type.STRING },
         },
+        required: ['action', 'reply'],
       },
-    });
+    };
+
+    let aiRes;
+    try {
+      aiRes = await ai.models.generateContent({
+        model: 'gemini-3.5-flash',
+        contents: prompt,
+        config: requestConfig,
+      });
+    } catch {
+      aiRes = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: prompt,
+        config: requestConfig,
+      });
+    }
 
     const parsed = JSON.parse((aiRes.text ?? '').trim());
 

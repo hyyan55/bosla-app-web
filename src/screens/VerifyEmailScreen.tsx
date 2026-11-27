@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { MailCheck, RefreshCw, ArrowRight, CheckCircle } from 'lucide-react';
 import { MobileShell } from '../components/MobileShell';
+import { BoslaLogo } from '../components/BoslaLogo';
 import { backend } from '../lib/backend';
 import { useApp } from '../context/AppContext';
 
@@ -50,7 +51,10 @@ export function VerifyEmailScreen() {
   return (
     <MobileShell showBottomNav={false}>
       <div className="flex-1 flex flex-col justify-between px-6 py-8 overflow-y-auto bg-white">
-        <div className="flex flex-col items-center text-center pt-4">
+        <div className="flex flex-col items-center text-center pt-2">
+          <div className="mb-4">
+            <BoslaLogo size={52} variant="light" />
+          </div>
           {!imgFailed ? (
             <img
               src="/src/assets/images/verify_email_envelope_1795719417861.jpg"
