@@ -765,17 +765,55 @@ export const backend = {
     return withSessionRetry(async () => {
       const { data: userData } = await supabase.auth.getUser();
       if (!userData.user) return [];
+
+      const { data: profile, error: profErr } = await supabase
+        .from('profiles')
+        .select('wallet_number')
+        .eq('id', userData.user.id)
+        .single();
+
+      if (profErr) {
+        if (isUnauthorizedError(profErr)) throw profErr;
+        throw new Error('تعذّر تحميل قائمة التطبيقات');
+      }
+
+      const walletNumber = profile?.wallet_number;
+      if (!walletNumber) return [];
+
       const { data, error } = await supabase
         .from('builds')
         .select('*')
-        .eq('user_id', userData.user.id)
+        .eq('wallet_number', walletNumber)
         .order('created_at', { ascending: false });
 
       if (error) {
         if (isUnauthorizedError(error)) throw error;
         throw new Error('تعذّر تحميل قائمة التطبيقات');
       }
-      return (data || []) as AppBuild[];
+
+      return (data || []).map((row: Record<string, unknown>): AppBuild => {
+        const rawStatus = row.status;
+        const status: AppBuild['status'] =
+          rawStatus === 'success'
+            ? 'ready'
+            : rawStatus === 'failed'
+              ? 'failed'
+              : 'building';
+
+        return {
+          id: String(row.id),
+          user_id: userData.user!.id,
+          description: String(row.prompt ?? ''),
+          complexity: row.complexity as ComplexityLevel,
+          points_spent: Number(row.points_charged) || 0,
+          status,
+          apk_url: (row.apk_artifact_url as string | null) ?? null,
+          error_message: null,
+          branch_name: null,
+          created_at: String(row.created_at),
+          updated_at: String(row.completed_at ?? row.created_at),
+        };
+      });
     });
   },
 
