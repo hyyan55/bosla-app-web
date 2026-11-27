@@ -41,6 +41,7 @@ interface PersistedAttachedImage {
 type LocalChatMessage = ChatMessage & {
   images?: string[];
   attachedImages?: PersistedAttachedImage[];
+  isRetryStatus?: boolean;
 };
 
 interface AttachedImage {
@@ -86,16 +87,18 @@ function syncMessagesToStorage(
         status: 'ready' as const,
       }));
 
-    const serialized: LocalChatMessage[] = msgs.map((m) => {
-      const { attachedImages: _ignored, ...rest } = m;
-      if (m.id === latestEstId && persistedReadyImages.length > 0) {
-        return {
-          ...rest,
-          attachedImages: persistedReadyImages,
-        };
-      }
-      return rest;
-    });
+    const serialized: LocalChatMessage[] = msgs
+      .filter((m) => !m.isRetryStatus)
+      .map((m) => {
+        const { attachedImages: _ignored, isRetryStatus: _retry, ...rest } = m;
+        if (m.id === latestEstId && persistedReadyImages.length > 0) {
+          return {
+            ...rest,
+            attachedImages: persistedReadyImages,
+          };
+        }
+        return rest;
+      });
 
     localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(serialized));
   } catch {
@@ -166,6 +169,7 @@ export function ChatScreen() {
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [imageUrlError, setImageUrlError] = useState<string | null>(null);
   const [thinking, setThinking] = useState(false);
+  const [isWaitingRetry, setIsWaitingRetry] = useState(false);
   const [thinkingStep, setThinkingStep] = useState<'analyzing' | 'estimating'>('analyzing');
   const [buildingId, setBuildingId] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(
@@ -178,6 +182,8 @@ export function ChatScreen() {
   const uploadCounterRef = useRef(0);
   const attachmentsRef = useRef<AttachedImage[]>([]);
   const messagesRef = useRef<LocalChatMessage[]>(messages);
+  const retryTimerRef = useRef<number | null>(null);
+  const retryAttemptTokenRef = useRef(0);
 
   messagesRef.current = messages;
 
@@ -191,6 +197,11 @@ export function ChatScreen() {
 
   useEffect(() => {
     return () => {
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+      retryAttemptTokenRef.current += 1;
       attachmentsRef.current.forEach((item) => {
         if (item.isObjectUrl) {
           URL.revokeObjectURL(item.previewUrl);
@@ -391,9 +402,24 @@ export function ChatScreen() {
 
   const sendMessage = async (rawText: string) => {
     const text = rawText.trim();
-    if (!text || thinking) return;
+    if (!text) return;
+
+    let cancelledPendingRetry = false;
+    if (retryTimerRef.current !== null) {
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+      retryAttemptTokenRef.current += 1;
+      setIsWaitingRetry(false);
+      cancelledPendingRetry = true;
+      setMessages((prev) => prev.filter((m) => !m.isRetryStatus));
+    }
+
+    if (thinking && !cancelledPendingRetry) return;
 
     if (attachments.some((a) => a.status === 'uploading')) {
+      if (cancelledPendingRetry) {
+        setThinking(false);
+      }
       showToast('انتظر اكتمال رفع الصور', 'info');
       return;
     }
@@ -403,7 +429,6 @@ export function ChatScreen() {
       .map((a) => a.publicUrl as string);
 
     setHasInteracted(true);
-    setInput('');
     setSupabaseNoticeMsgId(null);
 
     const userMsg: LocalChatMessage = {
@@ -414,50 +439,84 @@ export function ChatScreen() {
       images: readyImages.length > 0 ? readyImages : undefined,
     };
 
-    const nextHistory = [...messages, userMsg];
+    const nextHistory = [
+      ...messagesRef.current.filter((m) => !m.isRetryStatus),
+      userMsg,
+    ];
     setMessages(nextHistory);
     setThinking(true);
     trackAppEvent('chat_prompt_sent', { length: text.length });
 
-    try {
-      const res = await backend.sendChatMessage({
-        history: nextHistory
-          .filter((m) => m.id !== 'welcome' && !m.isError)
-          .map((m) => ({ role: m.role, text: m.text })),
-        message: text,
-        images: readyImages,
-      });
+    const attemptToken = ++retryAttemptTokenRef.current;
 
-      if (!res.ok) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `err_${Date.now()}`,
-            role: 'bot',
-            text: res.message,
-            createdAt: new Date().toISOString(),
-            isError: true,
-          },
-        ]);
+    const runAttempt = async (attempt: number) => {
+      if (retryAttemptTokenRef.current !== attemptToken) return;
+      setIsWaitingRetry(false);
+
+      let succeeded = false;
+      let botReply: { reply: string; estimate?: EstimatePayload } | null = null;
+
+      try {
+        const res = await backend.sendChatMessage({
+          history: nextHistory
+            .filter((m) => m.id !== 'welcome' && !m.isError && !m.isRetryStatus)
+            .map((m) => ({ role: m.role, text: m.text })),
+          message: text,
+          images: readyImages,
+        });
+
+        if (res.ok) {
+          succeeded = true;
+          botReply = { reply: res.reply, estimate: res.estimate };
+        }
+      } catch {
+        succeeded = false;
+      }
+
+      if (retryAttemptTokenRef.current !== attemptToken) return;
+
+      if (succeeded && botReply) {
+        if (readyImages.length > 0) {
+          setAttachmentsSent(true);
+        }
+
+        const botMsg: LocalChatMessage = {
+          id: `b_${Date.now()}`,
+          role: 'bot',
+          text: botReply.reply,
+          createdAt: new Date().toISOString(),
+          estimate: botReply.estimate,
+          promptDescription: text,
+        };
+        setMessages((prev) => [...prev.filter((m) => !m.isRetryStatus), botMsg]);
+        setInput('');
+        setThinking(false);
+        setIsWaitingRetry(false);
         return;
       }
 
-      if (readyImages.length > 0) {
-        setAttachmentsSent(true);
+      if (attempt < 3) {
+        setMessages((prev) => [
+          ...prev.filter((m) => !m.isRetryStatus),
+          {
+            id: `retry_${attemptToken}`,
+            role: 'bot',
+            text: 'الذكاء الاصطناعي مشغول — بحاول تاني…',
+            createdAt: new Date().toISOString(),
+            isRetryStatus: true,
+          },
+        ]);
+        setIsWaitingRetry(true);
+        const delayMs = attempt === 1 ? 30000 : 60000;
+        retryTimerRef.current = window.setTimeout(() => {
+          retryTimerRef.current = null;
+          void runAttempt(attempt + 1);
+        }, delayMs);
+        return;
       }
 
-      const botMsg: LocalChatMessage = {
-        id: `b_${Date.now()}`,
-        role: 'bot',
-        text: res.reply,
-        createdAt: new Date().toISOString(),
-        estimate: res.estimate,
-        promptDescription: text,
-      };
-      setMessages((prev) => [...prev, botMsg]);
-    } catch {
       setMessages((prev) => [
-        ...prev,
+        ...prev.filter((m) => !m.isRetryStatus),
         {
           id: `err_${Date.now()}`,
           role: 'bot',
@@ -466,9 +525,12 @@ export function ChatScreen() {
           isError: true,
         },
       ]);
-    } finally {
+      setInput('');
       setThinking(false);
-    }
+      setIsWaitingRetry(false);
+    };
+
+    await runAttempt(1);
   };
 
   const handleBuildApp = async (msgId: string, description: string, estimate: EstimatePayload) => {
@@ -616,7 +678,14 @@ export function ChatScreen() {
                           <span>تنبيه</span>
                         </div>
                       )}
-                      <p className="whitespace-pre-line">{msg.text}</p>
+                      {msg.isRetryStatus ? (
+                        <div className="flex items-center gap-2">
+                          <Loader2 className="w-4 h-4 animate-spin text-[#2878E8] shrink-0" />
+                          <p className="whitespace-pre-line">{msg.text}</p>
+                        </div>
+                      ) : (
+                        <p className="whitespace-pre-line">{msg.text}</p>
+                      )}
                     </div>
 
                     {/* Compact Estimate Card */}
@@ -826,7 +895,7 @@ export function ChatScreen() {
 
           <button
             type="submit"
-            disabled={!input.trim() || thinking}
+            disabled={!input.trim() || (thinking && !isWaitingRetry)}
             aria-label="إرسال الوصف"
             className="min-w-[46px] min-h-[46px] rounded-xl bg-[#2878E8] hover:bg-[#1E66CC] disabled:bg-slate-200 disabled:text-slate-400 text-white flex items-center justify-center transition-all active:scale-95 shrink-0"
           >
