@@ -3,7 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 // start-build v1 — Edge Function لتوليد وبناء تطبيق من برومبت واحد.
 // التدفق: تحقق من المستخدم → تحقق من الرصيد → خصم النقاط → إنشاء سجل بناء
-// → الرد 200 فوراً مع {build}، والبناء يستمر في الخلفية (EdgeRuntime.waitUntil):
+// → البدء المتزامن قبل الرد 200 (مهلة 45 ثانية)، ثم الرد 200 مع {build}، والمتابعة فقط في الخلفية (EdgeRuntime.waitUntil):
 // توليد الكود بـ Gemini → فرع جديد في bosla-app → دفع الكود → تشغيل workflow
 // build-apk.yml → انتظار النتيجة → تحديث سجل البناء (نجاح: رابط صفحة الـ run؛
 // فشل: استرجاع النقاط).
@@ -27,16 +27,22 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
+const GEMINI_API_KEYS: string[] = [];
+for (let i = 1; i <= 10; i++) {
+  const key = Deno.env.get(i === 1 ? "GEMINI_API_KEY" : "GEMINI_API_KEY_" + i);
+  if (key) GEMINI_API_KEYS.push(key);
+}
 const GITHUB_TOKEN = Deno.env.get("GITHUB_TOKEN");
 
 const REPO_OWNER = "hyyan55";
 const REPO_NAME = "bosla-app";
 const WORKFLOW_FILE = "build-apk.yml";
 const GENERATION_PROMPT_URL = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/GENERATION_PROMPT.md`;
-const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.8-flash"];
-const RETRY_DELAYS_MS = [3000, 6000];
-const FALLBACK_DELAY_MS = 5000;
+const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite"];
+const RETRY_DELAYS_MS = [2000, 3000];
+const SYNC_PHASE_DEADLINE_MS = 45000;
+const FETCH_TIMEOUT_MS = 10000;
+const FALLBACK_DELAY_MS = 3000;
 
 const POINTS_BY_COMPLEXITY: Record<string, number> = {
   simple: 100,
@@ -79,13 +85,18 @@ function b64encode(s: string): string {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function ghJson(path: string, method: string, body?: unknown): Promise<unknown> {
+  console.log(`[start-build] GitHub API start: ${method} ${path}`);
   const res = await fetch(`https://api.github.com${path}`, {
     method,
     headers: ghHeaders(),
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   const text = await res.text();
-  if (!res.ok) throw new Error(`GitHub ${method} ${path} -> ${res.status}: ${text.slice(0, 300)}`);
+  if (!res.ok) {
+    console.error(`[start-build] GitHub API error: ${method} ${path} -> ${res.status}`);
+    throw new Error(`GitHub ${method} ${path} -> ${res.status}: ${text.slice(0, 300)}`);  }
+  console.log(`[start-build] GitHub API done: ${method} ${path} -> ${res.status}`);
   return text ? JSON.parse(text) : null;
 }
 
@@ -99,22 +110,24 @@ function parseGeneratedFiles(text: string): Map<string, string> {
   return files;
 }
 
-async function callGeminiOnce(model: string, prompt: string): Promise<Map<string, string>> {
-  const systemRes = await fetch(GENERATION_PROMPT_URL);
+async function callGeminiOnce(model: string, prompt: string, imagesSection: string, apiKey: string, keyIndex: number): Promise<Map<string, string>> {
+  console.log("[start-build] Prompt fetch start");
+  const systemRes = await fetch(GENERATION_PROMPT_URL, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  console.log(`[start-build] Prompt fetch done: ${systemRes.status}`);
   if (!systemRes.ok) throw new Error(`cannot fetch GENERATION_PROMPT.md: ${systemRes.status}`);
   const systemPrompt = await systemRes.text();
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: systemPrompt + "\n\n## وصف المستخدم للتطبيق:\n" + prompt }] }],
+      contents: [{ parts: [{ text: systemPrompt + "\n\n## وصف المستخدم للتطبيق:\n" + prompt + imagesSection }] }],
       generationConfig: { temperature: 0.2 },
     }),
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) {
-    console.error("Gemini error:", model, res.status, JSON.stringify(data)?.slice(0, 300));
+    console.error("Gemini error:", model, `key #${keyIndex}`, res.status, JSON.stringify(data)?.slice(0, 1000));
     throw Object.assign(new Error("gemini failed"), { status: res.status });
   }
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text as string | undefined;
@@ -126,27 +139,53 @@ async function callGeminiOnce(model: string, prompt: string): Promise<Map<string
   return files;
 }
 
-async function generateCode(prompt: string): Promise<Map<string, string>> {
-  if (!GEMINI_API_KEY) throw Object.assign(new Error("missing GEMINI_API_KEY"), { status: 500 });
+function invalidDrawableRefs(files: Map<string, string>, allowed: Set<string>): string[] {
+  const bad = new Set<string>();
+  for (const content of files.values()) {
+    for (const m of content.matchAll(/@drawable\/([A-Za-z0-9_]+)/g)) {
+      if (!allowed.has(m[1])) bad.add(m[1]);
+    }
+    for (const m of content.matchAll(/R\.drawable\.([A-Za-z0-9_]+)/g)) {
+      if (!allowed.has(m[1])) bad.add(m[1]);
+    }
+  }
+  return [...bad];
+}
+
+async function generateCode(prompt: string, imagesSection: string, allowedDrawables: Set<string>, deadline: number): Promise<Map<string, string>> {
+  if (GEMINI_API_KEYS.length === 0) throw Object.assign(new Error("missing GEMINI_API_KEY"), { status: 500 });
+  let extraNote = "";
+  for (let k = 0; k < GEMINI_API_KEYS.length; k++) {
+    const apiKey = GEMINI_API_KEYS[k];
+    const keyIndex = k + 1;
   for (let m = 0; m < GEMINI_MODELS.length; m++) {
     const model = GEMINI_MODELS[m];
-    for (let attempt = 0; attempt < 3; attempt++) {
+    let lastStatus: number | undefined;    for (let attempt = 0; attempt < 3; attempt++) {
+        if (Date.now() > deadline) throw new Error("sync phase deadline exceeded (45s)");
       try {
-        return await callGeminiOnce(model, prompt);
+        const files = await callGeminiOnce(model, prompt, imagesSection + extraNote, apiKey, keyIndex);
+        const bad = invalidDrawableRefs(files, allowedDrawables);
+        if (bad.length > 0) {
+          console.error(`Gemini ${model} used missing drawables: ${bad.join(", ")} — retrying with correction`);
+          extraNote = `\n\nتصحيح مهم: الموارد التالية غير موجودة في المشروع — لا تستخدمها إطلاقاً: ${bad.join(", ")}. استخدم فقط الموارد المسموحة.`;
+          if (k === GEMINI_API_KEYS.length - 1 && m === GEMINI_MODELS.length - 1 && attempt === 2) throw new Error(`Gemini output references missing drawables: ${bad.join(", ")}`);
+          continue;
+        }
+        return files;
       } catch (e) {
-        const status = (e as { status?: number }).status;
-        const retryable = status === 429 || status === 503;
+        const status = (lastStatus = (e as { status?: number }).status);
+        const retryable = status === 503;
         if (!retryable || attempt === 2) break;
-        console.error(`Gemini ${model} attempt ${attempt + 1} failed (${status}), retrying...`);
+        console.error(`Gemini ${model} key #${keyIndex} attempt ${attempt + 1} failed (${status}), retrying...`);
         await sleep(RETRY_DELAYS_MS[attempt]);
       }
     }
-    if (m < GEMINI_MODELS.length - 1) {
-      console.error(`Gemini ${model} exhausted, falling back to ${GEMINI_MODELS[m + 1]}...`);
+    if (lastStatus !== 429 && (m < GEMINI_MODELS.length - 1 || k < GEMINI_API_KEYS.length - 1)) {
+      console.error(`Gemini ${model} key #${keyIndex} exhausted, falling back...`);
       await sleep(FALLBACK_DELAY_MS);
     }
   }
-  throw Object.assign(new Error("gemini failed"), { status: 502 });
+  }  throw Object.assign(new Error("gemini failed"), { status: 502 });
 }
 
 async function pushGeneratedCode(branch: string, files: Map<string, string>): Promise<void> {
@@ -173,7 +212,7 @@ async function pushGeneratedCode(branch: string, files: Map<string, string>): Pr
 
 async function waitForRun(branch: string, since: string): Promise<{ status: string; htmlUrl: string }> {
   for (let attempt = 0; attempt < 40; attempt++) {
-    await sleep(15000);
+    console.log(`[start-build] Poll tick: ${branch} attempt ${attempt + 1}`);    await sleep(15000);
     const data = await ghJson(
       `/repos/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${WORKFLOW_FILE}/runs?branch=${branch}&event=workflow_dispatch&per_page=1`,
       "GET",
@@ -190,12 +229,16 @@ async function waitForRun(branch: string, since: string): Promise<{ status: stri
   throw new Error("build timed out after 10 minutes");
 }
 
-async function runBuild(buildId: string, walletNumber: string, prompt: string, points: number): Promise<void> {
+async function startBuildSync(buildId: string, prompt: string, imagesSection: string, imageFiles: Array<{ url: string; name: string }>, deadline: number): Promise<{ branch: string; since: string }> {
   const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   const branch = `build-${buildId.slice(0, 8)}`;
+  console.log(`[start-build] Sync phase start: build ${buildId} branch ${branch}`);
   try {
-    const files = await generateCode(prompt);
-    const main = await ghJson(
+    const allowedDrawables = new Set(["ic_launcher_foreground", ...imageFiles.map((f) => f.name.replace(/\.[^.]+$/, ""))]);
+console.log(`[start-build] Code generation start: build ${buildId}`);
+    const files = await generateCode(prompt, imagesSection, allowedDrawables, deadline);
+    console.log(`[start-build] Code generation done: build ${buildId} files ${files.size}`);
+    console.log(`[start-build] Branch creation start: ${branch}`);    const main = await ghJson(
       `/repos/${REPO_OWNER}/${REPO_NAME}/git/ref/heads/main`,
       "GET",
     ) as { object: { sha: string } };
@@ -203,18 +246,34 @@ async function runBuild(buildId: string, walletNumber: string, prompt: string, p
       ref: `refs/heads/${branch}`,
       sha: main.object.sha,
     });
+    console.log(`[start-build] Branch creation done: ${branch}`);
     await pushGeneratedCode(branch, files);
+    console.log(`[start-build] File push done: ${branch}`);
+    console.log(`[start-build] Workflow dispatch start: ${branch}`);
     const since = new Date().toISOString();
     await ghJson(
       `/repos/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${WORKFLOW_FILE}/dispatches`,
       "POST",
-      { ref: branch },
+      imageFiles.length ? { ref: branch, inputs: { image_urls: imageFiles.map((f) => f.url).join(","), image_names: imageFiles.map((f) => f.name).join(",") } } : { ref: branch },
     );
+    console.log(`[start-build] Workflow dispatch done: ${branch}`);
+    return { branch, since };
+  } catch (e) {
+    console.error(`[start-build] Sync phase failed: build ${buildId}`, e);
+    throw e;
+  }
+}
+
+async function pollBuild(buildId: string, walletNumber: string, points: number, branch: string, since: string): Promise<void> {
+  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  try {
+    console.log(`[start-build] Polling start: build ${buildId} branch ${branch}`);
     const result = await waitForRun(branch, since);
+    console.log(`[start-build] Build success: ${buildId} branch ${branch}`);
     if (result.status === "success") {
       await admin.from("builds").update({
         status: "success",
-        apk_artifact_url: result.htmlUrl,
+        apk_artifact_url: `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${branch}/app-debug.apk`,
         completed_at: new Date().toISOString(),
       }).eq("id", buildId);
     } else {
@@ -225,12 +284,13 @@ async function runBuild(buildId: string, walletNumber: string, prompt: string, p
       status: "failed",
       completed_at: new Date().toISOString(),
     }).eq("id", buildId);
-    await admin.rpc("credit_points", {
+    await admin.rpc("refund_points", {
       p_wallet: walletNumber,
       p_amount: points,
       p_note: "build failed refund",
     });
-    console.error(`build ${buildId} failed:`, e);
+    console.log(`[start-build] Poll-failure refund done: build ${buildId} ${points} points`);
+  console.error(`[start-build] Poll phase failed, refunding: build ${buildId}`, e);
   }
 }
 
@@ -275,7 +335,7 @@ serve(async (req: Request): Promise<Response> => {
   const { data: { user }, error: authError } = await userClient.auth.getUser();
   if (authError || !user) return jsonResponse({ error: "invalid token" }, 401);
 
-  let body: { description?: unknown; complexity?: unknown };
+  let body: { description?: unknown; complexity?: unknown; images?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -292,6 +352,16 @@ serve(async (req: Request): Promise<Response> => {
   if (!description || !complexity) {
     return jsonResponse({ error: "invalid description/complexity" }, 400);
   }
+  const images: string[] = Array.isArray(body.images)
+    ? (body.images as unknown[]).filter((u): u is string => typeof u === "string" && /^https?:\/\//.test(u)).slice(0, 5)
+    : [];
+const imageFiles = images.map((url, i) => {
+  const m = url.split("?")[0].match(/\.(png|jpe?g|webp)$/i);
+  return { url, name: `img_${i + 1}${m ? m[0].toLowerCase() : ".jpg"}` };
+  });
+  const imagesSection = imageFiles.length
+    ? "\n\n## صور أرفقها المستخدم (موارد محلية جاهزة في res/drawable):\n" + imageFiles.map((f, i) => `- الصورة ${i + 1}: الملف ${f.name} — استخدمه كـ R.drawable.${f.name.replace(/\.[^.]+$/, "")} (شعار في الأعلى، أو صور في شبكة/قائمة حسب الوصف).`).join("\n") + "\nلا تحمّل أي صورة من رابط خارجي، ولا تولّد أي ملف صورة."
+    : "";
   const points = POINTS_BY_COMPLEXITY[complexity];
 
   if (!GITHUB_TOKEN) {
@@ -347,13 +417,28 @@ serve(async (req: Request): Promise<Response> => {
     .single();
   if (buildError || !build) return jsonResponse({ error: "could not create build" }, 500);
 
-  const branch = `build-${(build.id as string).slice(0, 8)}`;
+  // (branch is computed inside startBuildSync and returned as started.branch)
   const runtime = globalThis as unknown as {
     EdgeRuntime?: { waitUntil: (p: Promise<unknown>) => void };
   };
-  const task = runBuild(build.id as string, profile.wallet_number, description, points);
-  if (runtime.EdgeRuntime?.waitUntil) runtime.EdgeRuntime.waitUntil(task);
-  else task.catch((e) => console.error("background build failed:", e));
+  const deadline = Date.now() + SYNC_PHASE_DEADLINE_MS;
+  try {
+    const started = await startBuildSync(build.id as string, description, imagesSection, imageFiles, deadline);
+    console.log(`[start-build] Build started: ${build.id} branch ${started.branch}`);
+  if (runtime.EdgeRuntime?.waitUntil) runtime.EdgeRuntime.waitUntil(pollBuild(build.id as string, profile.wallet_number, points, started.branch, started.since));
+  else pollBuild(build.id as string, profile.wallet_number, points, started.branch, started.since).catch((e) => console.error("[start-build] Background poll failed:", e));
+    return jsonResponse({ build: toAppBuild(build, user.id, started.branch) }, 200);
+  } catch (syncErr) {
+    console.error(`[start-build] Sync start failed, refunding: ${build.id}`, syncErr);
+    try {
+      await admin.from("builds").update({ status: "failed", completed_at: new Date().toISOString() }).eq("id", build.id);
+      await admin.rpc("refund_points", { p_wallet: profile.wallet_number, p_amount: points, p_note: `Refund: build ${build.id} failed to start` });
+      console.log(`[start-build] Sync-failure refund done: build ${build.id} ${points} points`);
+    } catch (refundErr) {
+      console.error(`[start-build] Sync-failure refund FAILED: build ${build.id}`, refundErr);
+    }
+    return jsonResponse({ error: "تعذّر بدء البناء، وتمت إعادة النقاط إلى محفظتك" }, 500);
+  }
 
-  return jsonResponse({ build: toAppBuild(build, user.id, branch) }, 200);
+  // (the sync try above already returned 200 on success, or 500 with a refund on failure)
 });
