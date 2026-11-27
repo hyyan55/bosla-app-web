@@ -378,6 +378,7 @@ if (result.status === "success") {
         apk_artifact_url: `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${branch}/app-debug.apk`,
         completed_at: new Date().toISOString(),
       }).eq("id", buildId);
+      await sendBuildNotification(walletNumber, "success", buildId);
     } else {
       throw new Error(`build concluded: ${result.status}`);
     }
@@ -392,6 +393,7 @@ if (result.status === "success") {
       p_note: "build failed refund",
     });
     console.log(`[start-build] Poll-failure refund done: build ${buildId} ${points} points`);
+    await sendBuildNotification(walletNumber, "failed", buildId);
   console.error(`[start-build] Poll phase failed, refunding: build ${buildId}`, e);
   }
 }
@@ -544,3 +546,100 @@ const imageFiles = images.map((url, i) => {
 
   // (the sync try above already returned 200 on success, or 500 with a refund on failure)
 });
+
+// إشعار اكتمال البناء عبر FCM — لا ترمي أبداً داخل مسار البناء.
+async function sendBuildNotification(walletNumber: string, status: "success" | "failed", buildId: string): Promise<void> {
+  try {
+    const secretRaw = Deno.env.get("FIREBASE_SERVICE_ACCOUNT_JSON");
+    if (!secretRaw) {
+      console.log("[start-build] FCM skipped: no service account secret");
+      return;
+    }
+    let serviceAccount: { client_email: string; private_key: string; token_uri: string };
+    try {
+      serviceAccount = JSON.parse(secretRaw);
+    } catch {
+      console.log("[start-build] FCM skipped: no service account secret");
+      return;
+    }
+    const { client_email, private_key, token_uri } = serviceAccount;
+    if (!client_email || !private_key || !token_uri) {
+      console.log("[start-build] FCM skipped: no service account secret");
+      return;
+    }
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const header = { alg: "RS256", typ: "JWT" };
+    const payload = {
+      iss: client_email,
+      scope: "https://www.googleapis.com/auth/firebase.messaging",
+      aud: token_uri,
+      exp: nowSeconds + 3600,
+      iat: nowSeconds,
+    };
+    const base64Url = (input: ArrayBuffer | Uint8Array): string => {
+      const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+      let binary = "";
+      bytes.forEach((b) => { binary += String.fromCharCode(b); });
+      return btoa(binary).split("+").join("-").split("/").join("_").replace(/=+$/, "");
+    };
+    const pemBody = private_key.replace("-----BEGIN PRIVATE KEY-----", "").replace("-----END PRIVATE KEY-----", "").replace(/\s+/g, "");
+    const keyBytes = Uint8Array.from(atob(pemBody), (c) => c.charCodeAt(0));
+    const cryptoKey = await crypto.subtle.importKey("pkcs8", keyBytes, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
+    const unsignedToken = `${base64Url(new TextEncoder().encode(JSON.stringify(header)))}.${base64Url(new TextEncoder().encode(JSON.stringify(payload)))}`;
+    const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", cryptoKey, new TextEncoder().encode(unsignedToken));
+    const jwt = `${unsignedToken}.${base64Url(signature)}`;
+    const tokenRes = await fetch(token_uri, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: `grant_type=${encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer")}&assertion=${encodeURIComponent(jwt)}`,
+    });
+    if (!tokenRes.ok) {
+      console.error("[start-build] FCM token request failed:", tokenRes.status, await tokenRes.text());
+      return;
+    }
+    const tokenJson = await tokenRes.json() as { access_token?: string };
+    const accessToken = tokenJson.access_token;
+    if (!accessToken) {
+      console.error("[start-build] FCM token request failed: no access_token");
+      return;
+    }
+    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    const { data: deviceTokens, error: tokensError } = await admin.from("device_tokens").select("fcm_token").eq("wallet_number", walletNumber);
+    if (tokensError) {
+      console.error("[start-build] FCM device_tokens query failed:", tokensError);
+      return;
+    }
+    const tokens = (deviceTokens ?? []).map((row) => row.fcm_token).filter((t): t is string => typeof t === "string" && t.length > 0);
+    if (tokens.length === 0) {
+      console.log(`[start-build] FCM skipped: no device tokens for wallet ${walletNumber}`);
+      return;
+    }
+    const isSuccess = status === "success";
+    const title = isSuccess ? "تطبيقك جاهز 🎉" : "تعذّر بناء التطبيق";
+    const body = isSuccess ? "اكتمل بناء تطبيقك — افتح التطبيق لتنزيله" : "فشل بناء التطبيق — تمت إعادة النقاط إلى محفظتك";
+    for (const token of tokens) {
+      try {
+        const sendRes = await fetch("https://fcm.googleapis.com/v1/projects/bosla-app-aa374/messages:send", {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: {
+              token,
+              notification: { title, body },
+              data: { build_id: buildId, status, type: "build_completed" },
+            },
+          }),
+        });
+        if (sendRes.ok) {
+          console.log(`[start-build] FCM sent: build ${buildId} status=${status} token=${token.slice(0, 8)}`);
+        } else {
+          console.error(`[start-build] FCM send failed: build ${buildId} status=${status} token=${token.slice(0, 8)} http=${sendRes.status}`, await sendRes.text());
+        }
+      } catch (sendErr) {
+        console.error(`[start-build] FCM send failed: build ${buildId} status=${status} token=${token.slice(0, 8)}`, sendErr);
+      }
+    }
+  } catch (e) {
+    console.error(`[start-build] FCM notification failed: build ${buildId}`, e);
+  }
+}
