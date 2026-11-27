@@ -37,6 +37,9 @@ const GITHUB_TOKEN = Deno.env.get("GITHUB_TOKEN");
 const REPO_OWNER = "hyyan55";
 const REPO_NAME = "bosla-app";
 const WORKFLOW_FILE = "build-apk.yml";
+const MAX_FIX_ATTEMPTS = 2;
+const FIX_PHASE_DEADLINE_MS = 180000;
+
 const GENERATION_PROMPT_URL = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/GENERATION_PROMPT.md`;
 const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite"];
 const RETRY_DELAYS_MS = [2000, 3000];
@@ -210,26 +213,103 @@ async function pushGeneratedCode(branch: string, files: Map<string, string>): Pr
   }
 }
 
-async function waitForRun(branch: string, since: string): Promise<{ status: string; htmlUrl: string }> {
+async function waitForRun(branch: string, since: string): Promise<{ status: string; htmlUrl: string; runId: number | null }> {
   for (let attempt = 0; attempt < 40; attempt++) {
     console.log(`[start-build] Poll tick: ${branch} attempt ${attempt + 1}`);    await sleep(15000);
     const data = await ghJson(
       `/repos/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${WORKFLOW_FILE}/runs?branch=${branch}&event=workflow_dispatch&per_page=1`,
       "GET",
     ) as {
-      workflow_runs: Array<{ status: string; conclusion: string | null; html_url: string; created_at: string }>;
+      workflow_runs: Array<{ id: number; status: string; conclusion: string | null; html_url: string; created_at: string }>;
     };
     const run = data.workflow_runs?.[0];
     if (run && run.created_at >= since) {
       if (run.status === "completed") {
-        return { status: run.conclusion ?? "failure", htmlUrl: run.html_url };
+        return { status: run.conclusion ?? "failure", htmlUrl: run.html_url, runId: run.id };
       }
     }
   }
   throw new Error("build timed out after 10 minutes");
 }
 
-async function startBuildSync(buildId: string, prompt: string, imagesSection: string, imageFiles: Array<{ url: string; name: string }>, deadline: number): Promise<{ branch: string; since: string }> {
+// --- Automatic fix loop: fetch the failed build log, ask Gemini to fix only the broken code, re-push and re-dispatch (max 2 attempts) ---
+const FIX_NL = String.fromCharCode(10);
+function extractBuildErrorLines(logText: string): string {
+  const keywords = ["error:", "FAILED", "Unresolved reference", "Exception"];
+  const lines = logText.split(FIX_NL).filter((line) => keywords.some((k) => line.includes(k)));
+  return lines.slice(0, 40).join(FIX_NL).slice(0, 4000);
+}
+async function extractZipText(zip: ArrayBuffer): Promise<string> {
+  const bytes = new Uint8Array(zip);
+  const view = new DataView(zip);
+  const decoder = new TextDecoder();
+  const parts: string[] = [];
+  let offset = 0;
+  while (offset + 30 <= bytes.length) {
+    if (view.getUint32(offset, true) !== 0x04034b50) break;
+    const method = view.getUint16(offset + 8, true);
+    const compressedSize = view.getUint32(offset + 18, true);
+    const nameLength = view.getUint16(offset + 26, true);
+    const extraLength = view.getUint16(offset + 28, true);
+    const dataStart = offset + 30 + nameLength + extraLength;
+    const dataEnd = dataStart + compressedSize;
+    if (dataEnd > bytes.length) break;
+    const data = bytes.slice(dataStart, dataEnd);
+    if (method === 8) {
+      const stream = new Response(data).body!.pipeThrough(new DecompressionStream("deflate-raw"));
+      parts.push(await new Response(stream).text());
+    } else if (method === 0) {
+      parts.push(decoder.decode(data));
+    }
+    offset = dataEnd;
+  }
+  return parts.join(FIX_NL);
+}
+async function fetchFailedBuildError(runId: number | null): Promise<string> {
+  let failedStep = "unknown step";
+  try {
+    if (!runId) return "failed run (no run id)";
+    const jobsData = await ghJson("/repos/" + REPO_OWNER + "/" + REPO_NAME + "/actions/runs/" + runId + "/jobs") as {
+      jobs: Array<{ id: number; name: string; conclusion: string | null }>;
+    };
+    const failedJob = (jobsData.jobs ?? []).find((job) => job.conclusion === "failure" || job.conclusion === "cancelled");
+    if (!failedJob) return "failed run (no failed job found)";
+    failedStep = failedJob.name + " (" + (failedJob.conclusion ?? "failed") + ")";
+    const res = await fetch("https://api.github.com/repos/" + REPO_OWNER + "/" + REPO_NAME + "/actions/jobs/" + failedJob.id + "/logs", {
+      headers: ghHeaders(),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error("logs download failed: " + res.status);
+    const logText = await extractZipText(await res.arrayBuffer());
+    const excerpt = extractBuildErrorLines(logText);
+    return excerpt ? "Failed step: " + failedStep + FIX_NL + excerpt : "Failed step: " + failedStep;
+  } catch (e) {
+    console.error("[start-build] Failed to fetch build logs, continuing with step info only", e);
+    return "Failed step: " + failedStep;
+  }
+}
+async function fixGeneratedCode(previousFiles: Map<string, string>, errorExcerpt: string, deadline: number): Promise<Map<string, string>> {
+  if (GEMINI_API_KEYS.length === 0) throw Object.assign(new Error("missing GEMINI_API_KEY"), { status: 500 });
+  const previous = [...previousFiles.entries()]
+    .map(([path, content]) => "### FILE: " + path + FIX_NL + "```" + FIX_NL + content + FIX_NL + "```")
+    .join(FIX_NL + FIX_NL);
+  const fixPrompt = "The previous generated Android app failed to build with this error:" + FIX_NL + errorExcerpt + FIX_NL + FIX_NL + "Fix ONLY the broken code and keep everything else identical. Output the FULL corrected files in the same ### FILE: blocks. Use ONLY APIs that exist in AndroidX/Material as declared in the template's build.gradle (never invent listener names, e.g. never call a listener method that does not exist). Here are the previous files:" + FIX_NL + FIX_NL + previous;
+  for (let k = 0; k < GEMINI_API_KEYS.length; k++) {
+    const apiKey = GEMINI_API_KEYS[k];
+    const keyIndex = k + 1;
+    for (let m = 0; m < GEMINI_MODELS.length; m++) {
+      const model = GEMINI_MODELS[m];
+      try {
+        if (Date.now() > deadline) throw new Error("fix phase deadline exceeded");
+        return await callGeminiOnce(model, fixPrompt, "", apiKey, keyIndex);
+      } catch (e) {
+        console.error("Gemini fix " + model + " key #" + keyIndex + " failed", e);
+      }
+    }
+  }
+  throw Object.assign(new Error("gemini fix failed"), { status: 502 });
+}
+async function startBuildSync(buildId: string, prompt: string, imagesSection: string, imageFiles: Array<{ url: string; name: string }>, deadline: number): Promise<{ branch: string; since: string; files: Map<string, string> }> {
   const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   const branch = `build-${buildId.slice(0, 8)}`;
   console.log(`[start-build] Sync phase start: build ${buildId} branch ${branch}`);
@@ -257,20 +337,42 @@ console.log(`[start-build] Code generation start: build ${buildId}`);
       imageFiles.length ? { ref: branch, inputs: { image_urls: imageFiles.map((f) => f.url).join(","), image_names: imageFiles.map((f) => f.name).join(",") } } : { ref: branch },
     );
     console.log(`[start-build] Workflow dispatch done: ${branch}`);
-    return { branch, since };
+    return { branch, since, files };
   } catch (e) {
     console.error(`[start-build] Sync phase failed: build ${buildId}`, e);
     throw e;
   }
 }
 
-async function pollBuild(buildId: string, walletNumber: string, points: number, branch: string, since: string): Promise<void> {
+async function pollBuild(buildId: string, walletNumber: string, points: number, branch: string, since: string, files: Map<string, string>, imageFiles: Array<{ url: string; name: string }>): Promise<void> {
   const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   try {
     console.log(`[start-build] Polling start: build ${buildId} branch ${branch}`);
-    const result = await waitForRun(branch, since);
-    console.log(`[start-build] Build success: ${buildId} branch ${branch}`);
-    if (result.status === "success") {
+    let result = await waitForRun(branch, since);
+    console.log(`[start-build] Run completed: build ${buildId} branch ${branch} conclusion=${result.status}`);
+        let currentFiles = files;
+    for (let fixAttempt = 1; result.status !== "success" && fixAttempt <= MAX_FIX_ATTEMPTS; fixAttempt++) {
+      const errorExcerpt = await fetchFailedBuildError(result.runId);
+      console.log("[start-build] Fix attempt " + fixAttempt + "/" + MAX_FIX_ATTEMPTS + ": build " + buildId + " branch " + branch + " error: " + errorExcerpt.slice(0, 500));
+      try {
+        const fixedFiles = await fixGeneratedCode(currentFiles, errorExcerpt, Date.now() + FIX_PHASE_DEADLINE_MS);
+        currentFiles = fixedFiles;
+        await pushGeneratedCode(branch, fixedFiles);
+        const fixSince = new Date().toISOString();
+        await ghJson(
+          "/repos/" + REPO_OWNER + "/" + REPO_NAME + "/actions/workflows/" + WORKFLOW_FILE + "/dispatches",
+          "POST",
+          imageFiles.length ? { ref: branch, inputs: { image_urls: imageFiles.map((f) => f.url).join(","), image_names: imageFiles.map((f) => f.name).join(",") } } : { ref: branch },
+        );
+        console.log("[start-build] Fix attempt " + fixAttempt + " re-dispatched: build " + buildId + " branch " + branch);
+        result = await waitForRun(branch, fixSince);
+        console.log("[start-build] Run completed: build " + buildId + " branch " + branch + " conclusion=" + result.status);
+      } catch (fixErr) {
+        console.error("[start-build] Fix attempt " + fixAttempt + " failed: build " + buildId, fixErr);
+        break;
+      }
+    }
+if (result.status === "success") {
       await admin.from("builds").update({
         status: "success",
         apk_artifact_url: `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${branch}/app-debug.apk`,
@@ -425,8 +527,8 @@ const imageFiles = images.map((url, i) => {
   try {
     const started = await startBuildSync(build.id as string, description, imagesSection, imageFiles, deadline);
     console.log(`[start-build] Build started: ${build.id} branch ${started.branch}`);
-  if (runtime.EdgeRuntime?.waitUntil) runtime.EdgeRuntime.waitUntil(pollBuild(build.id as string, profile.wallet_number, points, started.branch, started.since));
-  else pollBuild(build.id as string, profile.wallet_number, points, started.branch, started.since).catch((e) => console.error("[start-build] Background poll failed:", e));
+  if (runtime.EdgeRuntime?.waitUntil) runtime.EdgeRuntime.waitUntil(pollBuild(build.id as string, profile.wallet_number, points, started.branch, started.since, started.files, imageFiles));
+  else pollBuild(build.id as string, profile.wallet_number, points, started.branch, started.since, started.files, imageFiles).catch((e) => console.error("[start-build] Background poll failed:", e));
     return jsonResponse({ build: toAppBuild(build, user.id, started.branch) }, 200);
   } catch (syncErr) {
     console.error(`[start-build] Sync start failed, refunding: ${build.id}`, syncErr);
