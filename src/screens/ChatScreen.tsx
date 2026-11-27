@@ -33,7 +33,15 @@ const MAX_ATTACHED_IMAGES = 5;
 const IMAGE_URL_EXT_REGEX = /\.(png|jpe?g|gif|webp|svg|avif|bmp)$/i;
 const CHAT_STORAGE_KEY = 'bosla-chat-messages';
 
-type LocalChatMessage = ChatMessage & { images?: string[] };
+interface PersistedAttachedImage {
+  publicUrl: string;
+  status: 'ready' | 'uploading' | 'error';
+}
+
+type LocalChatMessage = ChatMessage & {
+  images?: string[];
+  attachedImages?: PersistedAttachedImage[];
+};
 
 interface AttachedImage {
   id: string;
@@ -46,6 +54,10 @@ interface AttachedImage {
   isObjectUrl?: boolean;
 }
 
+function isHttpUrl(raw: unknown): raw is string {
+  return typeof raw === 'string' && /^https?:\/\//i.test(raw.trim());
+}
+
 function isValidImageUrl(raw: string): boolean {
   const trimmed = raw.trim();
   if (!/^https?:\/\//i.test(trimmed)) return false;
@@ -55,6 +67,39 @@ function isValidImageUrl(raw: string): boolean {
     return IMAGE_URL_EXT_REGEX.test(parsed.pathname);
   } catch {
     return false;
+  }
+}
+
+function syncMessagesToStorage(
+  msgs: LocalChatMessage[],
+  atts: AttachedImage[],
+): void {
+  try {
+    const latestEstId = [...msgs]
+      .reverse()
+      .find((m) => m.role === 'bot' && Boolean(m.estimate))?.id;
+
+    const persistedReadyImages: PersistedAttachedImage[] = atts
+      .filter((a) => a.status === 'ready' && isHttpUrl(a.publicUrl))
+      .map((a) => ({
+        publicUrl: a.publicUrl as string,
+        status: 'ready' as const,
+      }));
+
+    const serialized: LocalChatMessage[] = msgs.map((m) => {
+      const { attachedImages: _ignored, ...rest } = m;
+      if (m.id === latestEstId && persistedReadyImages.length > 0) {
+        return {
+          ...rest,
+          attachedImages: persistedReadyImages,
+        };
+      }
+      return rest;
+    });
+
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(serialized));
+  } catch {
+    // ignore storage quota errors
   }
 }
 
@@ -91,16 +136,33 @@ export function ChatScreen() {
     messages.some((m) => m.role === 'user'),
   );
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages));
-    } catch {
-      // ignore storage quota errors
-    }
-  }, [messages]);
   const [input, setInput] = useState('');
-  const [attachments, setAttachments] = useState<AttachedImage[]>([]);
-  const [attachmentsSent, setAttachmentsSent] = useState(false);
+  const [attachments, setAttachments] = useState<AttachedImage[]>(() => {
+    const latestEst = [...messages]
+      .reverse()
+      .find((m) => m.role === 'bot' && Boolean(m.estimate));
+    if (!latestEst?.attachedImages?.length) return [];
+    return latestEst.attachedImages
+      .filter((item) => item && item.status === 'ready' && isHttpUrl(item.publicUrl))
+      .map((item, idx) => ({
+        id: `restored_${latestEst.id}_${idx}`,
+        previewUrl: item.publicUrl,
+        publicUrl: item.publicUrl,
+        status: 'ready' as const,
+        index: idx,
+        isObjectUrl: false,
+      }));
+  });
+  const [attachmentsSent, setAttachmentsSent] = useState<boolean>(() => {
+    const latestEst = [...messages]
+      .reverse()
+      .find((m) => m.role === 'bot' && Boolean(m.estimate));
+    return Boolean(
+      latestEst?.attachedImages?.some(
+        (item) => item && item.status === 'ready' && isHttpUrl(item.publicUrl),
+      ),
+    );
+  });
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [imageUrlError, setImageUrlError] = useState<string | null>(null);
   const [thinking, setThinking] = useState(false);
@@ -115,6 +177,13 @@ export function ChatScreen() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const uploadCounterRef = useRef(0);
   const attachmentsRef = useRef<AttachedImage[]>([]);
+  const messagesRef = useRef<LocalChatMessage[]>(messages);
+
+  messagesRef.current = messages;
+
+  useEffect(() => {
+    syncMessagesToStorage(messages, attachments);
+  }, [messages, attachments]);
 
   useEffect(() => {
     attachmentsRef.current = attachments;
@@ -248,6 +317,7 @@ export function ChatScreen() {
       if (next.length === 0) {
         setAttachmentsSent(false);
       }
+      syncMessagesToStorage(messagesRef.current, next);
       return next;
     });
   };
@@ -259,6 +329,7 @@ export function ChatScreen() {
           URL.revokeObjectURL(item.previewUrl);
         }
       });
+      syncMessagesToStorage(messagesRef.current, []);
       return [];
     });
     setAttachmentsSent(false);
