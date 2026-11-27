@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { MobileShell } from '../components/MobileShell';
 import { backend, COMPLEXITY_LABELS } from '../lib/backend';
+import { subscribeBuildWatcher, watchBuildingBuilds } from '../lib/buildWatcher';
 import { openDownloadedApk, startApkDownload, useApkDownloads } from '../lib/downloadManager';
 import type { AppBuild, BuildStatus } from '../types';
 
@@ -75,17 +76,28 @@ export function BuildsScreen() {
     loadBuilds(false);
   }, [loadBuilds]);
 
-  // Poll builds table every 8s while any build is still building
+  // استئناف مراقبة أي بناء بحالة building عند تحميل القائمة، وإيقافها عند عدم وجود بناء قيد البناء
   useEffect(() => {
-    if (!backend.isSupabaseConfigured) return;
-    const hasBuilding = builds.some((b) => b.status === 'building');
-    if (!hasBuilding) return;
+    if (loading) return;
+    watchBuildingBuilds(builds);
+  }, [builds, loading]);
 
-    const timer = window.setInterval(() => {
-      loadBuilds(true);
-    }, 8000);
-    return () => window.clearInterval(timer);
-  }, [builds, loadBuilds]);
+  // الاشتراك في تحديثات buildWatcher لتحديث حالة البناء و apk_url فور وصولها
+  useEffect(() => {
+    return subscribeBuildWatcher((update) => {
+      setBuilds((prev) =>
+        prev.map((build) =>
+          build.id === update.buildId
+            ? {
+                ...build,
+                status: update.status,
+                apk_url: update.apkUrl ?? build.apk_url,
+              }
+            : build,
+        ),
+      );
+    });
+  }, []);
 
   const handleTouchStart = (e: React.TouchEvent) => {
     if (scrollRef.current && scrollRef.current.scrollTop === 0) {
@@ -321,9 +333,18 @@ export function BuildsScreen() {
                       )}
 
                       {installErr && (
-                        <p className="text-xs text-red-700 bg-red-50 rounded-xl px-3 py-2">
-                          {installErr}
-                        </p>
+                        <div className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 space-y-2">
+                          <p className="text-xs text-red-700 leading-relaxed">{installErr}</p>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => startApkDownload(b)}
+                            className="min-h-[36px] px-3 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold text-xs inline-flex items-center gap-1.5 transition-colors"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5 shrink-0" />
+                            <span>إعادة المحاولة</span>
+                          </button>
+                        </div>
                       )}
                     </div>
                   );

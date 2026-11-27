@@ -1,5 +1,10 @@
 import { useSyncExternalStore } from 'react';
-import { downloadApkWithProgress, openCachedApkInstaller } from './downloadApk';
+import {
+  DOWNLOAD_FAILED_MESSAGE,
+  INSTALL_PERMISSION_MESSAGE,
+  downloadApkWithProgress,
+  openCachedApkInstaller,
+} from './downloadApk';
 import type { AppBuild } from '../types';
 
 export interface BuildDownloadState {
@@ -22,7 +27,6 @@ let snapshot: DownloadManagerSnapshot = {
 
 const listeners = new Set<() => void>();
 const activeDownloadIds = new Set<string>();
-const cachedBlobs = new Map<string, Blob>();
 
 function emitChange() {
   listeners.forEach((listener) => listener());
@@ -31,6 +35,13 @@ function emitChange() {
 function updateSnapshot(updater: (prev: DownloadManagerSnapshot) => DownloadManagerSnapshot) {
   snapshot = updater(snapshot);
   emitChange();
+}
+
+function getArabicErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof Error && err.message.trim().length > 0) {
+    return err.message;
+  }
+  return fallback;
 }
 
 export function subscribeDownloads(listener: () => void): () => void {
@@ -84,7 +95,8 @@ export function startApkDownload(build: AppBuild): void {
     };
   });
 
-  let filePersistedLocally = false;
+  // لا يُعلَّم البناء بحالة done إلا بعد تأكيد downloadApkWithProgress عبر Filesystem.stat.
+  let nativeFileVerified = false;
 
   void downloadApkWithProgress(
     build.apk_url,
@@ -128,16 +140,13 @@ export function startApkDownload(build: AppBuild): void {
       });
     },
     {
-      onBlobCached: (blob) => {
-        cachedBlobs.set(build.id, blob);
-        filePersistedLocally = true;
-      },
       onNativeFileSaved: () => {
-        filePersistedLocally = true;
+        nativeFileVerified = true;
       },
     },
   )
     .then(() => {
+      if (!nativeFileVerified) return;
       updateSnapshot((prev) => {
         const existing = prev.downloads[build.id] ?? {
           downloadedBytes: 0,
@@ -159,10 +168,14 @@ export function startApkDownload(build: AppBuild): void {
         };
       });
     })
-    .catch(() => {
+    .catch((err: unknown) => {
+      const errorMessage = getArabicErrorMessage(
+        err,
+        nativeFileVerified ? INSTALL_PERMISSION_MESSAGE : DOWNLOAD_FAILED_MESSAGE,
+      );
       updateSnapshot((prev) => {
         const nextDownloads = { ...prev.downloads };
-        if (filePersistedLocally && nextDownloads[build.id]) {
+        if (nativeFileVerified && nextDownloads[build.id]) {
           nextDownloads[build.id] = {
             ...nextDownloads[build.id],
             phase: 'done',
@@ -175,7 +188,7 @@ export function startApkDownload(build: AppBuild): void {
           downloads: nextDownloads,
           installErrors: {
             ...prev.installErrors,
-            [build.id]: 'تعذّر فتح مثبّت التطبيق — تأكد من صلاحية التثبيت وحاول مجدداً.',
+            [build.id]: errorMessage,
           },
         };
       });
@@ -197,20 +210,25 @@ export async function openDownloadedApk(build: AppBuild): Promise<void> {
   });
 
   try {
-    const result = await openCachedApkInstaller(
-      fileName,
-      build.apk_url,
-      cachedBlobs.get(build.id),
-    );
-    if (result === 'missing_native_cache') {
+    const result = await openCachedApkInstaller(fileName);
+    if (result === 'missing_file') {
+      updateSnapshot((prev) => {
+        const nextDownloads = { ...prev.downloads };
+        delete nextDownloads[build.id];
+        return {
+          ...prev,
+          downloads: nextDownloads,
+        };
+      });
       startApkDownload(build);
     }
-  } catch {
+  } catch (err: unknown) {
+    const errorMessage = getArabicErrorMessage(err, INSTALL_PERMISSION_MESSAGE);
     updateSnapshot((prev) => ({
       ...prev,
       installErrors: {
         ...prev.installErrors,
-        [build.id]: 'تعذّر فتح مثبّت التطبيق — تأكد من صلاحية التثبيت وحاول مجدداً.',
+        [build.id]: errorMessage,
       },
     }));
   }
