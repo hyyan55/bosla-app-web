@@ -13,6 +13,7 @@
   "dependencies": {
     "@capacitor-community/file-opener": "^8.0.1",
     "@capacitor/android": "^8.6.3",
+    "@capacitor/app": "^8.0.0",
     "@capacitor/core": "^8.6.3",
     "@capacitor/filesystem": "^8.1.5",
     "@google/genai": "^2.4.0",

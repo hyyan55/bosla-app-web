@@ -142,6 +142,7 @@ export function AdminPanel() {
   };
 
   const handleAdminLogout = () => {
+    backend.adminLogout();
     try {
       sessionStorage.removeItem(ADMIN_SESSION_KEY);
     } catch {

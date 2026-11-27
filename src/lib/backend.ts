@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { Capacitor } from '@capacitor/core';
 import type {
   AppBuild,
   AppSettings,
@@ -112,6 +113,106 @@ async function withSessionRetry<T>(operation: () => Promise<T>): Promise<T> {
       throw retryErr;
     }
   }
+}
+
+const ADMIN_PASSWORD_STORAGE_KEY = 'bosla_admin_password';
+let adminPasswordMemory: string | null = null;
+
+function setStoredAdminPassword(password: string): void {
+  adminPasswordMemory = password;
+  try {
+    localStorage.setItem(ADMIN_PASSWORD_STORAGE_KEY, password);
+  } catch {
+    // ignore storage restrictions
+  }
+}
+
+function getStoredAdminPassword(): string | null {
+  if (adminPasswordMemory) return adminPasswordMemory;
+  try {
+    const stored = localStorage.getItem(ADMIN_PASSWORD_STORAGE_KEY);
+    if (stored) {
+      adminPasswordMemory = stored;
+      return stored;
+    }
+  } catch {
+    // ignore storage restrictions
+  }
+  return null;
+}
+
+function clearStoredAdminPassword(): void {
+  adminPasswordMemory = null;
+  try {
+    localStorage.removeItem(ADMIN_PASSWORD_STORAGE_KEY);
+  } catch {
+    // ignore storage restrictions
+  }
+}
+
+function getAuthRedirectUrl(path: 'verified' | 'reset-password'): string {
+  if (Capacitor.isNativePlatform()) {
+    return `boslaapp://${path}`;
+  }
+  return `${window.location.origin}/${path}`;
+}
+
+async function invokeAdminData<T = unknown>(
+  action: string,
+  payload: Record<string, unknown> = {},
+): Promise<T> {
+  if (!supabase) {
+    throw new Error('لم يتم تهيئة الاتصال بالخادم');
+  }
+  const adminPassword = getStoredAdminPassword();
+  if (!adminPassword) {
+    throw new Error('انتهت جلسة الإدارة — سجّل دخول الإدارة من جديد');
+  }
+
+  const { data, error } = await supabase.functions.invoke('admin-data', {
+    body: {
+      action,
+      admin_password: adminPassword,
+      ...payload,
+    },
+  });
+
+  if (error) {
+    const status = (error as { context?: { status?: number } })?.context?.status;
+    const msg = (error.message || '').toLowerCase();
+    if (status === 401 || status === 403 || msg.includes('unauthorized') || msg.includes('password')) {
+      throw new Error('كلمة سر الإدارة غير صالحة — سجّل دخول الإدارة من جديد');
+    }
+    throw new Error('تعذّر تنفيذ طلب الإدارة — تحقق من الاتصال وحاول مجدداً');
+  }
+
+  if (data && typeof data === 'object' && 'error' in data && (data as { error?: unknown }).error) {
+    const errVal = String((data as { error: unknown }).error);
+    if (errVal.toLowerCase().includes('unauthorized') || errVal.toLowerCase().includes('password')) {
+      throw new Error('كلمة سر الإدارة غير صالحة — سجّل دخول الإدارة من جديد');
+    }
+    throw new Error(errVal);
+  }
+
+  return data as T;
+}
+
+function extractRows(res: unknown, keys: string[]): Array<Record<string, unknown>> {
+  if (Array.isArray(res)) {
+    return res as Array<Record<string, unknown>>;
+  }
+  if (res && typeof res === 'object') {
+    const obj = res as Record<string, unknown>;
+    for (const key of keys) {
+      if (Array.isArray(obj[key])) {
+        return obj[key] as Array<Record<string, unknown>>;
+      }
+    }
+    if (Array.isArray(obj.data)) {
+      return obj.data as Array<Record<string, unknown>>;
+    }
+  }
+  return [];
 }
 
 // ============================================================================
@@ -601,7 +702,7 @@ export const backend = {
       email: cleanEmail,
       password: params.password,
       options: {
-        emailRedirectTo: `${window.location.origin}/verified`,
+        emailRedirectTo: getAuthRedirectUrl('verified'),
         data: {
           full_name: cleanName,
           username: cleanUsername,
@@ -634,7 +735,7 @@ export const backend = {
       type: 'signup',
       email: cleanEmail,
       options: {
-        emailRedirectTo: `${window.location.origin}/verified`,
+        emailRedirectTo: getAuthRedirectUrl('verified'),
       },
     });
     if (error) {
@@ -680,7 +781,7 @@ export const backend = {
     }
 
     const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
-      redirectTo: `${window.location.origin}/reset-password`,
+      redirectTo: getAuthRedirectUrl('reset-password'),
     });
     if (error) {
       return { ok: false, message: 'تعذّر إرسال رابط الاستعادة — تأكد من البريد وحاول مجدداً' };
@@ -1094,6 +1195,7 @@ export const backend = {
         cleanUser === store.adminCredentials.username &&
         passHash === store.adminCredentials.passwordHash
       ) {
+        setStoredAdminPassword(password);
         return { ok: true };
       }
       return { ok: false, message: 'بيانات الدخول غير صحيحة' };
@@ -1113,9 +1215,14 @@ export const backend = {
     const expectedHash = data.admin_password_hash || DEFAULT_ADMIN_PASSWORD_HASH;
 
     if (cleanUser === expectedUser && passHash === expectedHash) {
+      setStoredAdminPassword(password);
       return { ok: true };
     }
     return { ok: false, message: 'بيانات الدخول غير صحيحة' };
+  },
+
+  adminLogout(): void {
+    clearStoredAdminPassword();
   },
 
   async adminChangePassword(params: {
@@ -1160,6 +1267,7 @@ export const backend = {
     });
 
     if (!rpcErr && rpcOk === true) {
+      setStoredAdminPassword(params.newPassword);
       return { ok: true, message: 'تم تغيير كلمة سر الإدارة بنجاح' };
     }
 
@@ -1171,6 +1279,7 @@ export const backend = {
     if (updateErr) {
       return { ok: false, message: 'تعذّر تحديث كلمة سر الإدارة' };
     }
+    setStoredAdminPassword(params.newPassword);
     return { ok: true, message: 'تم تغيير كلمة سر الإدارة بنجاح' };
   },
 
@@ -1191,18 +1300,23 @@ export const backend = {
         .map(toUserProfile);
     }
 
-    return withSessionRetry(async () => {
-      let req = supabase.from('profiles').select('*').order('created_at', { ascending: false }).limit(50);
-      if (q) {
-        req = req.or(`wallet_number.ilike.%${q}%,full_name.ilike.%${q}%,phone.ilike.%${q}%,email.ilike.%${q}%`);
-      }
-      const { data, error } = await req;
-      if (error) {
-        if (isUnauthorizedError(error)) throw error;
-        throw new Error('تعذّر البحث في المحافظ');
-      }
-      return (data || []) as UserProfile[];
+    const res = await invokeAdminData<unknown>('list_users', {
+      search: query.trim(),
+      query: query.trim(),
     });
+    const rows = extractRows(res, ['users', 'profiles', 'wallets']);
+    return rows.map((row): UserProfile => ({
+      id: String(row.profile_id ?? row.id ?? row.user_id ?? row.email ?? ''),
+      full_name: String(row.display_name ?? row.full_name ?? '—'),
+      username: String(row.username ?? ''),
+      email: String(row.email ?? ''),
+      phone: row.phone ? String(row.phone) : undefined,
+      wallet_number: row.wallet_number ? String(row.wallet_number) : '—',
+      points_balance: Number(row.points_balance ?? 0) || 0,
+      email_verified: Boolean(row.email_verified ?? row.email_confirmed_at ?? true),
+      is_admin: Boolean(row.is_admin ?? false),
+      created_at: String(row.created_at ?? ''),
+    }));
   },
 
   async adminAdjustPoints(params: {
@@ -1239,20 +1353,30 @@ export const backend = {
       return { ok: true, newBalance: nextBalance, message: 'تم تحديث رصيد المحفظة بنجاح' };
     }
 
-    return withSessionRetry(async () => {
-      const rpcName = params.delta > 0 ? 'credit_points' : 'debit_points';
-      const { data, error } = await supabase.rpc(rpcName, {
-        target_user_id: params.userId,
-        points_amount: Math.abs(params.delta),
-        tx_type: params.delta > 0 ? 'admin_credit' : 'admin_debit',
-        tx_description: params.reason.trim() || (params.delta > 0 ? 'شحن إداري' : 'خصم إداري'),
+    try {
+      const reasonText =
+        params.reason.trim() || (params.delta > 0 ? 'شحن إداري' : 'خصم إداري');
+      const targetPayload = params.userId.startsWith('BOS-')
+        ? { wallet_number: params.userId }
+        : { profile_id: params.userId };
+      const res = await invokeAdminData<Record<string, unknown>>('adjust_points', {
+        ...targetPayload,
+        delta: params.delta,
+        reason: reasonText,
       });
-      if (error) {
-        if (isUnauthorizedError(error)) throw error;
-        return { ok: false, message: error.message || 'تعذّر تعديل النقاط' };
-      }
-      return { ok: true, newBalance: Number(data), message: 'تم تحديث الرصيد بنجاح' };
-    });
+      const rawBalance = res?.new_balance ?? res?.newBalance ?? res?.balance ?? res?.points_balance;
+      const newBalance = rawBalance !== undefined && rawBalance !== null ? Number(rawBalance) : undefined;
+      return {
+        ok: true,
+        newBalance: newBalance !== undefined && !Number.isNaN(newBalance) ? newBalance : undefined,
+        message: 'تم تحديث الرصيد بنجاح',
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        message: err instanceof Error ? err.message : 'تعذّر تعديل النقاط',
+      };
+    }
   },
 
   async adminListTopupRequests(): Promise<TopupRequest[]> {
@@ -1260,17 +1384,21 @@ export const backend = {
       return readDemoStore().topupRequests;
     }
 
-    return withSessionRetry(async () => {
-      const { data, error } = await supabase
-        .from('topup_requests')
-        .select('*')
-        .order('created_at', { ascending: false });
-      if (error) {
-        if (isUnauthorizedError(error)) throw error;
-        throw new Error('تعذّر تحميل طلبات الشحن');
-      }
-      return (data || []) as TopupRequest[];
-    });
+    const res = await invokeAdminData<unknown>('list_topups');
+    const rows = extractRows(res, ['topups', 'topup_requests', 'requests']);
+    return rows.map((row): TopupRequest => ({
+      id: String(row.id ?? ''),
+      user_id: String(row.user_id ?? row.profile_id ?? ''),
+      wallet_number: String(row.wallet_number ?? ''),
+      user_name: String(row.user_name ?? row.display_name ?? row.full_name ?? '—'),
+      method: (row.method as TopupMethod) || 'bankak',
+      points: Number(row.points ?? 0) || 0,
+      price_sdg: Number(row.price_sdg ?? 0) || 0,
+      status: (row.status as TopupRequest['status']) || 'pending',
+      admin_note: row.admin_note ? String(row.admin_note) : undefined,
+      created_at: String(row.created_at ?? ''),
+      reviewed_at: row.reviewed_at ? String(row.reviewed_at) : undefined,
+    }));
   },
 
   async adminReviewTopup(params: {
@@ -1313,21 +1441,22 @@ export const backend = {
       };
     }
 
-    return withSessionRetry(async () => {
-      const { error } = await supabase.rpc('approve_topup_request', {
+    try {
+      await invokeAdminData('approve_topup', {
         req_id: params.requestId,
-        is_approved: params.approve,
-        note_text: params.note?.trim() || null,
+        approve: params.approve,
+        note: params.note?.trim() || null,
       });
-      if (error) {
-        if (isUnauthorizedError(error)) throw error;
-        return { ok: false, message: error.message || 'تعذّر معالجة الطلب' };
-      }
       return {
         ok: true,
         message: params.approve ? 'تمت الموافقة وشحن النقاط بنجاح' : 'تم رفض الطلب',
       };
-    });
+    } catch (err) {
+      return {
+        ok: false,
+        message: err instanceof Error ? err.message : 'تعذّر معالجة الطلب',
+      };
+    }
   },
 
   async adminListAllTransactions(): Promise<PointsTransaction[]> {
@@ -1335,74 +1464,22 @@ export const backend = {
       return readDemoStore().transactions;
     }
 
-    return withSessionRetry(async () => {
-      const { data, error } = await supabase
-        .from('points_transactions')
-        .select('id, wallet_number, amount, type, reason, admin_note, created_at')
-        .order('created_at', { ascending: false })
-        .limit(100);
-      if (error) {
-        if (isUnauthorizedError(error)) throw error;
-        throw new Error('تعذّر تحميل سجل المعاملات');
-      }
-
-      const rows = (data || []) as Array<Record<string, unknown>>;
-      const walletNumbers = Array.from(
-        new Set(
-          rows
-            .map((r) => r.wallet_number)
-            .filter((w): w is string => typeof w === 'string' && w.length > 0),
-        ),
-      );
-
-      const profileByWallet = new Map<
-        string,
-        { user_id: string; user_name: string; runningBalance: number }
-      >();
-
-      if (walletNumbers.length > 0) {
-        const { data: profilesData, error: profErr } = await supabase
-          .from('profiles')
-          .select('id, wallet_number, full_name, points_balance')
-          .in('wallet_number', walletNumbers);
-
-        if (profErr) {
-          if (isUnauthorizedError(profErr)) throw profErr;
-          throw new Error('تعذّر تحميل سجل المعاملات');
-        }
-
-        for (const p of (profilesData || []) as Array<Record<string, unknown>>) {
-          const w = typeof p.wallet_number === 'string' ? p.wallet_number : '';
-          if (!w) continue;
-          profileByWallet.set(w, {
-            user_id: String(p.id ?? ''),
-            user_name: String(p.full_name ?? ''),
-            runningBalance: Number(p.points_balance) || 0,
-          });
-        }
-      }
-
-      return rows.map((row): PointsTransaction => {
-        const walletNumber = typeof row.wallet_number === 'string' ? row.wallet_number : '';
-        const amount = Number(row.amount) || 0;
-        const prof = profileByWallet.get(walletNumber);
-        const balanceAfter = prof ? prof.runningBalance : 0;
-        if (prof) {
-          prof.runningBalance -= amount;
-        }
-
-        return {
-          id: String(row.id),
-          user_id: prof?.user_id ?? '',
-          wallet_number: walletNumber || undefined,
-          user_name: prof?.user_name || undefined,
-          type: inferTransactionType(row.type, row.reason, amount),
-          amount,
-          balance_after: balanceAfter,
-          description: String(row.reason ?? row.admin_note ?? ''),
-          created_at: String(row.created_at),
-        };
-      });
+    const res = await invokeAdminData<unknown>('list_transactions');
+    const rows = extractRows(res, ['transactions', 'points_transactions']);
+    return rows.map((row): PointsTransaction => {
+      const amount = Number(row.amount ?? 0) || 0;
+      const rawDesc = row.description ?? row.reason ?? row.admin_note ?? '';
+      return {
+        id: String(row.id ?? ''),
+        user_id: String(row.user_id ?? row.profile_id ?? ''),
+        wallet_number: row.wallet_number ? String(row.wallet_number) : undefined,
+        user_name: row.user_name ? String(row.user_name) : undefined,
+        type: inferTransactionType(row.type, row.reason ?? row.description, amount),
+        amount,
+        balance_after: Number(row.balance_after ?? 0) || 0,
+        description: String(rawDesc),
+        created_at: String(row.created_at ?? ''),
+      };
     });
   },
 
