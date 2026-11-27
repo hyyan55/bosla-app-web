@@ -23,11 +23,68 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+export interface DownloadCallbacks {
+  onBlobCached?: (blob: Blob) => void;
+  onNativeFileSaved?: (fileName: string) => void;
+}
+
+function triggerWebBlobDownload(blob: Blob, fileName: string): void {
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  } finally {
+    window.setTimeout(() => {
+      URL.revokeObjectURL(objectUrl);
+    }, 100);
+  }
+}
+
+export async function openCachedApkInstaller(
+  fileName: string,
+  apkUrl: string,
+  cachedBlob?: Blob,
+): Promise<'opened' | 'missing_native_cache'> {
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await Filesystem.stat({
+        path: fileName,
+        directory: Directory.Cache,
+      });
+    } catch {
+      return 'missing_native_cache';
+    }
+
+    const { uri } = await Filesystem.getUri({
+      path: fileName,
+      directory: Directory.Cache,
+    });
+    await FileOpener.open({
+      filePath: uri,
+      contentType: 'application/vnd.android.package-archive',
+    });
+    return 'opened';
+  }
+
+  if (cachedBlob) {
+    triggerWebBlobDownload(cachedBlob, fileName);
+    return 'opened';
+  }
+
+  window.open(apkUrl, '_blank');
+  return 'opened';
+}
+
 export async function downloadApkWithProgress(
   apkUrl: string,
   fileName: string,
   onProgress: (progress: DownloadProgress) => void,
   onPhaseChange?: (phase: DownloadPhase) => void,
+  callbacks?: DownloadCallbacks,
 ): Promise<'native' | 'web' | 'fallback'> {
   let blob: Blob;
 
@@ -94,6 +151,7 @@ export async function downloadApkWithProgress(
       data: base64,
       directory: Directory.Cache,
     });
+    callbacks?.onNativeFileSaved?.(fileName);
     const { uri } = await Filesystem.getUri({
       path: fileName,
       directory: Directory.Cache,
@@ -105,19 +163,7 @@ export async function downloadApkWithProgress(
     return 'native';
   }
 
-  const objectUrl = URL.createObjectURL(blob);
-  try {
-    const anchor = document.createElement('a');
-    anchor.href = objectUrl;
-    anchor.download = fileName;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-  } finally {
-    window.setTimeout(() => {
-      URL.revokeObjectURL(objectUrl);
-    }, 100);
-  }
-
+  callbacks?.onBlobCached?.(blob);
+  triggerWebBlobDownload(blob, fileName);
   return 'web';
 }

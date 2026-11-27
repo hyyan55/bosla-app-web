@@ -111,21 +111,63 @@ Deno.serve(async (req) => {
     };
 
     let aiRes;
+    const callGemini = async (model: string) => {
+      const startedAt = Date.now();
+      console.log(`[chat] calling Gemini model=${model} msgLen=${message.length}`);
+      try {
+        const res = await ai.models.generateContent({
+          model,
+          contents: prompt,
+          config: requestConfig,
+        });
+        console.log(`[chat] Gemini succeeded model=${model} durationMs=${Date.now() - startedAt}`);
+        return res;
+      } catch (err) {
+        console.error(
+          `[chat] Gemini failed model=${model} durationMs=${Date.now() - startedAt}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+        throw err;
+      }
+    };
+
     try {
-      aiRes = await ai.models.generateContent({
-        model: 'gemini-3.5-flash',
-        contents: prompt,
-        config: requestConfig,
-      });
+      aiRes = await callGemini('gemini-3.5-flash');
     } catch {
-      aiRes = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: prompt,
-        config: requestConfig,
-      });
+      aiRes = await callGemini('gemini-3.8-flash');
     }
 
-    const parsed = JSON.parse((aiRes.text ?? '').trim());
+    const rawText = (aiRes.text ?? '').trim();
+    if (!rawText) {
+      console.error('[chat] Gemini returned empty response text');
+      return new Response(
+        JSON.stringify({ error: 'تعذّر استلام رد من الذكاء الاصطناعي — حاول لاحقاً' }),
+        {
+          status: 502,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        },
+      );
+    }
+
+    const parsed = JSON.parse(rawText) as {
+      action?: string;
+      reply?: unknown;
+      complexity?: string;
+      features?: unknown;
+      reason?: string;
+    };
+
+    const replyText = typeof parsed?.reply === 'string' ? parsed.reply.trim() : '';
+    if (!replyText) {
+      console.error('[chat] Gemini JSON missing valid reply:', rawText.slice(0, 300));
+      return new Response(
+        JSON.stringify({ error: 'تعذّر قراءة رد الذكاء الاصطناعي — حاول لاحقاً' }),
+        {
+          status: 502,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        },
+      );
+    }
 
     if (parsed.action === 'estimate') {
       const complexity =
@@ -138,22 +180,23 @@ Deno.serve(async (req) => {
       return new Response(
         JSON.stringify({
           action: 'estimate',
-          reply: parsed.reply,
+          reply: replyText,
           complexity,
           points,
           price_sdg: points * pointPriceSdg,
           features: Array.isArray(parsed.features) ? parsed.features.slice(0, 5) : [],
-          reason: parsed.reason || '',
+          reason: typeof parsed.reason === 'string' ? parsed.reason : '',
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
     return new Response(
-      JSON.stringify({ action: 'clarify', reply: parsed.reply }),
+      JSON.stringify({ action: 'clarify', reply: replyText }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   } catch (err) {
+    console.error('[chat] unhandled error:', err instanceof Error ? err.message : String(err));
     return new Response(JSON.stringify({ error: String(err) }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },

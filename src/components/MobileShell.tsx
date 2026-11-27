@@ -1,5 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
+import { Capacitor } from '@capacitor/core';
 import { MessageSquareText, Wallet, Smartphone, UserRound, AlertCircle, CheckCircle2, Info } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { backend } from '../lib/backend';
@@ -24,6 +25,7 @@ export function MobileShell({
   bgTone = 'canvas',
 }: MobileShellProps) {
   const { toast } = useApp();
+  const isNative = Capacitor.isNativePlatform();
 
   return (
     <div className="min-h-dvh w-full bg-[#E6ECF5] flex justify-center items-stretch sm:py-4 sm:px-4">
@@ -32,6 +34,16 @@ export function MobileShell({
           bgTone === 'navy' ? 'bg-[#101D35] text-white' : 'bg-[#F5F7FB] text-[#101D35]'
         }`}
       >
+        {/* Safe-area top inset so app headers never overlap the Android status bar */}
+        <div
+          aria-hidden="true"
+          className={`shrink-0 bg-[#101D35] ${
+            isNative
+              ? 'pt-[max(env(safe-area-inset-top),28px)]'
+              : 'pt-[max(env(safe-area-inset-top),24px)] sm:pt-0'
+          }`}
+        />
+
         {/* Honest Demo Banner when Supabase is not configured */}
         {backend.isDemoMode && bgTone === 'canvas' && (
           <div className="bg-[#FFF9EB] border-b border-[#D5B45C]/40 px-3 py-1.5 text-[11px] font-medium text-[#7B5D12] flex items-center justify-center gap-1.5 text-center shrink-0">
@@ -49,7 +61,11 @@ export function MobileShell({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -16 }}
               transition={{ duration: 0.2 }}
-              className="absolute top-3 left-3 right-3 z-50 pointer-events-none flex justify-center"
+              className={`absolute left-3 right-3 z-50 pointer-events-none flex justify-center ${
+                isNative
+                  ? 'top-[calc(max(env(safe-area-inset-top),28px)+0.5rem)]'
+                  : 'top-[calc(max(env(safe-area-inset-top),24px)+0.5rem)] sm:top-3'
+              }`}
             >
               <div
                 className={`pointer-events-auto flex items-center gap-2 px-4 py-2.5 rounded-2xl shadow-lg text-xs font-semibold border max-w-full ${

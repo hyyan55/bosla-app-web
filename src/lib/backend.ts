@@ -22,17 +22,33 @@ export const isSupabaseConfigured =
 
 export const isDemoMode = !isSupabaseConfigured;
 
-// Generous timeout fetch for slow 4G networks (30s read / connect)
+// Generous timeout fetch for slow 4G networks (60s for Edge Functions, 30s otherwise)
 async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+  const timeoutMs = urlStr.includes('/functions/v1/') ? 60000 : 30000;
   const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), 30000);
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  const callerSignal = init?.signal;
+  const onCallerAbort = () => controller.abort();
+  if (callerSignal) {
+    if (callerSignal.aborted) {
+      controller.abort();
+    } else {
+      callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+    }
+  }
+
   try {
     return await fetch(input, {
       ...init,
-      signal: init?.signal ?? controller.signal,
+      signal: controller.signal,
     });
   } finally {
     window.clearTimeout(timeoutId);
+    if (callerSignal) {
+      callerSignal.removeEventListener('abort', onCallerAbort);
+    }
   }
 }
 
@@ -178,20 +194,49 @@ async function invokeAdminData<T = unknown>(
   });
 
   if (error) {
-    const status = (error as { context?: { status?: number } })?.context?.status;
-    const msg = (error.message || '').toLowerCase();
+    const context = (error as { context?: Response })?.context;
+    const status = context?.status;
+    let serverErrMsg = '';
+    if (context && typeof context.json === 'function') {
+      try {
+        const cloned = typeof context.clone === 'function' ? context.clone() : context;
+        const bodyJson = (await cloned.json()) as { error?: unknown; message?: unknown };
+        if (typeof bodyJson?.error === 'string' && bodyJson.error.trim()) {
+          serverErrMsg = bodyJson.error.trim();
+        } else if (typeof bodyJson?.message === 'string' && bodyJson.message.trim()) {
+          serverErrMsg = bodyJson.message.trim();
+        }
+      } catch {
+        // ignore non-JSON error context
+      }
+    }
+
+    const msg = `${serverErrMsg} ${error.message || ''}`.toLowerCase();
     if (status === 401 || status === 403 || msg.includes('unauthorized') || msg.includes('password')) {
       throw new Error('كلمة سر الإدارة غير صالحة — سجّل دخول الإدارة من جديد');
+    }
+    if (serverErrMsg) {
+      throw new Error(serverErrMsg);
     }
     throw new Error('تعذّر تنفيذ طلب الإدارة — تحقق من الاتصال وحاول مجدداً');
   }
 
-  if (data && typeof data === 'object' && 'error' in data && (data as { error?: unknown }).error) {
-    const errVal = String((data as { error: unknown }).error);
-    if (errVal.toLowerCase().includes('unauthorized') || errVal.toLowerCase().includes('password')) {
-      throw new Error('كلمة سر الإدارة غير صالحة — سجّل دخول الإدارة من جديد');
+  if (data && typeof data === 'object') {
+    const obj = data as { error?: unknown; ok?: unknown; message?: unknown };
+    if (obj.error) {
+      const errVal = String(obj.error);
+      if (errVal.toLowerCase().includes('unauthorized') || errVal.toLowerCase().includes('password')) {
+        throw new Error('كلمة سر الإدارة غير صالحة — سجّل دخول الإدارة من جديد');
+      }
+      throw new Error(errVal);
     }
-    throw new Error(errVal);
+    if (obj.ok === false) {
+      throw new Error(
+        typeof obj.message === 'string' && obj.message.trim()
+          ? obj.message.trim()
+          : 'تعذّر تنفيذ طلب الإدارة',
+      );
+    }
   }
 
   return data as T;
@@ -1037,37 +1082,100 @@ export const backend = {
       };
     }
 
-    const settings = await this.getSettings();
+    const settingsPromise = Promise.race<AppSettings>([
+      this.getSettings(),
+      new Promise<AppSettings>((resolve) =>
+        window.setTimeout(() => resolve({ ...DEFAULT_SETTINGS }), 2500),
+      ),
+    ]);
     const attachedImages = params.images ?? images ?? [];
 
     try {
-      const res = await withSessionRetry(async () => {
-        const { data, error } = await supabase.functions.invoke('chat', {
-          body: {
-            message: params.message,
-            history: params.history.slice(-6),
-            images: attachedImages,
-          },
-        });
-        if (error) throw error;
-        return data as {
-          action?: 'clarify' | 'estimate';
-          reply: string;
-          estimate?: {
-            complexity?: ComplexityLevel;
-            points?: number;
-            price_sdg?: number;
-            features?: string[];
-            reasoning?: string;
-            reason?: string;
-          } | null;
+      const rawRes = await withSessionRetry(async () => {
+        let timeoutId: number | undefined;
+        try {
+          const invokePromise = supabase.functions.invoke('chat', {
+            body: {
+              message: params.message,
+              history: params.history.slice(-6),
+              images: attachedImages,
+            },
+            timeout: 55000,
+          });
+          const guardPromise = new Promise<never>((_, reject) => {
+            timeoutId = window.setTimeout(
+              () => reject(new Error('chat_invoke_timeout')),
+              58000,
+            );
+          });
+          const { data, error } = await Promise.race([invokePromise, guardPromise]);
+          if (error) {
+            const errCtx = (error as { context?: { status?: number } })?.context;
+            if (errCtx?.status === 401) {
+              throw Object.assign(new Error('Unauthorized'), { status: 401 });
+            }
+            throw error;
+          }
+          return data;
+        } finally {
+          if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+        }
+      });
+
+      const settings = await settingsPromise;
+
+      let parsedRes = rawRes;
+      if (typeof parsedRes === 'string') {
+        try {
+          parsedRes = JSON.parse(parsedRes);
+        } catch {
+          return {
+            ok: false,
+            message: 'استجابة غير متوقعة من الخادم — حاول لاحقاً',
+          };
+        }
+      }
+
+      if (!parsedRes || typeof parsedRes !== 'object') {
+        return {
+          ok: false,
+          message: 'تعذّر استلام رد من الذكاء الاصطناعي — حاول لاحقاً',
+        };
+      }
+
+      const res = parsedRes as {
+        error?: unknown;
+        action?: 'clarify' | 'estimate';
+        reply?: unknown;
+        estimate?: {
           complexity?: ComplexityLevel;
           points?: number;
           price_sdg?: number;
           features?: string[];
+          reasoning?: string;
           reason?: string;
+        } | null;
+        complexity?: ComplexityLevel;
+        points?: number;
+        price_sdg?: number;
+        features?: string[];
+        reason?: string;
+      };
+
+      if (res.error) {
+        return {
+          ok: false,
+          message: 'تعذّر الوصول للذكاء الاصطناعي — حاول لاحقاً',
         };
-      });
+      }
+
+      const replyText = typeof res.reply === 'string' ? res.reply.trim() : '';
+      if (!replyText) {
+        return {
+          ok: false,
+          message: 'تعذّر استلام نص الرد من الذكاء الاصطناعي — حاول لاحقاً',
+        };
+      }
 
       if (res.estimate && res.estimate.complexity) {
         const complexity = res.estimate.complexity;
@@ -1075,7 +1183,7 @@ export const backend = {
         const priceSdg = res.estimate.price_sdg ?? points * settings.point_price_sdg;
         return {
           ok: true,
-          reply: res.reply,
+          reply: replyText,
           estimate: {
             complexity,
             complexityLabel: COMPLEXITY_LABELS[complexity],
@@ -1091,7 +1199,7 @@ export const backend = {
       }
 
       if (res.estimate === null) {
-        return { ok: true, reply: res.reply };
+        return { ok: true, reply: replyText };
       }
 
       if (res.action === 'estimate' && res.complexity) {
@@ -1099,7 +1207,7 @@ export const backend = {
         const priceSdg = res.price_sdg ?? points * settings.point_price_sdg;
         return {
           ok: true,
-          reply: res.reply,
+          reply: replyText,
           estimate: {
             complexity: res.complexity,
             complexityLabel: COMPLEXITY_LABELS[res.complexity],
@@ -1111,10 +1219,16 @@ export const backend = {
         };
       }
 
-      return { ok: true, reply: res.reply };
+      return { ok: true, reply: replyText };
     } catch (err) {
       if (err instanceof Error && err.message.includes('انتهت جلستك')) {
         return { ok: false, message: err.message };
+      }
+      if (err instanceof Error && err.message === 'chat_invoke_timeout') {
+        return {
+          ok: false,
+          message: 'استغرق الاتصال بالذكاء الاصطناعي وقتاً طويلاً — حاول لاحقاً',
+        };
       }
       return {
         ok: false,
@@ -1442,11 +1556,20 @@ export const backend = {
     }
 
     try {
-      await invokeAdminData('approve_topup', {
+      const res = await invokeAdminData<Record<string, unknown> | null>('approve_topup', {
         req_id: params.requestId,
         approve: params.approve,
         note: params.note?.trim() || null,
       });
+      if (res && res.ok === false) {
+        return {
+          ok: false,
+          message:
+            typeof res.message === 'string' && res.message.trim()
+              ? res.message.trim()
+              : 'تعذّر اعتماد الطلب وشحن النقاط — لم يتم تغيير الرصيد',
+        };
+      }
       return {
         ok: true,
         message: params.approve ? 'تمت الموافقة وشحن النقاط بنجاح' : 'تم رفض الطلب',
@@ -1454,7 +1577,10 @@ export const backend = {
     } catch (err) {
       return {
         ok: false,
-        message: err instanceof Error ? err.message : 'تعذّر معالجة الطلب',
+        message:
+          err instanceof Error && err.message.trim()
+            ? err.message
+            : 'تعذّر معالجة الطلب وشحن النقاط — لم يتم تغيير الرصيد',
       };
     }
   },

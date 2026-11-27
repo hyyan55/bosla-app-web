@@ -11,8 +11,6 @@ import {
   ImagePlus,
   X,
   RotateCcw,
-  Link2,
-  Plus,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { BoslaLogo } from '../components/BoslaLogo';
@@ -30,7 +28,6 @@ const SUGGESTIONS = [
 
 const MAX_CHARS = 2000;
 const MAX_ATTACHED_IMAGES = 5;
-const IMAGE_URL_EXT_REGEX = /\.(png|jpe?g|gif|webp|svg|avif|bmp)$/i;
 const CHAT_STORAGE_KEY = 'bosla-chat-messages';
 
 interface PersistedAttachedImage {
@@ -57,18 +54,6 @@ interface AttachedImage {
 
 function isHttpUrl(raw: unknown): raw is string {
   return typeof raw === 'string' && /^https?:\/\//i.test(raw.trim());
-}
-
-function isValidImageUrl(raw: string): boolean {
-  const trimmed = raw.trim();
-  if (!/^https?:\/\//i.test(trimmed)) return false;
-  try {
-    const parsed = new URL(trimmed);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
-    return IMAGE_URL_EXT_REGEX.test(parsed.pathname);
-  } catch {
-    return false;
-  }
 }
 
 function syncMessagesToStorage(
@@ -166,8 +151,6 @@ export function ChatScreen() {
       ),
     );
   });
-  const [imageUrlInput, setImageUrlInput] = useState('');
-  const [imageUrlError, setImageUrlError] = useState<string | null>(null);
   const [thinking, setThinking] = useState(false);
   const [isWaitingRetry, setIsWaitingRetry] = useState(false);
   const [thinkingStep, setThinkingStep] = useState<'analyzing' | 'estimating'>('analyzing');
@@ -344,60 +327,6 @@ export function ChatScreen() {
       return [];
     });
     setAttachmentsSent(false);
-    setImageUrlInput('');
-    setImageUrlError(null);
-  };
-
-  const handleAddImageUrl = () => {
-    const trimmed = imageUrlInput.trim();
-    if (!trimmed) return;
-
-    if (!isValidImageUrl(trimmed)) {
-      setImageUrlError('أدخل رابط صورة صحيح يبدأ بـ http(s) وينتهي بامتداد صورة');
-      return;
-    }
-
-    const shouldReplace = attachmentsSent;
-    if (!shouldReplace && attachments.length >= MAX_ATTACHED_IMAGES) {
-      showToast('الحد الأقصى 5 صور مرفقة في المحادثة', 'info');
-      return;
-    }
-
-    setImageUrlError(null);
-    setImageUrlInput('');
-
-    if (shouldReplace) {
-      setAttachments((prev) => {
-        prev.forEach((item) => {
-          if (item.isObjectUrl) {
-            URL.revokeObjectURL(item.previewUrl);
-          }
-        });
-        return [
-          {
-            id: `url_${Date.now()}_${uploadCounterRef.current++}`,
-            previewUrl: trimmed,
-            publicUrl: trimmed,
-            status: 'ready',
-            index: 0,
-            isObjectUrl: false,
-          },
-        ];
-      });
-      setAttachmentsSent(false);
-    } else {
-      setAttachments((prev) => [
-        ...prev,
-        {
-          id: `url_${Date.now()}_${uploadCounterRef.current++}`,
-          previewUrl: trimmed,
-          publicUrl: trimmed,
-          status: 'ready',
-          index: prev.length,
-          isObjectUrl: false,
-        },
-      ]);
-    }
   };
 
   const sendMessage = async (rawText: string) => {
@@ -452,25 +381,46 @@ export function ChatScreen() {
     const runAttempt = async (attempt: number) => {
       if (retryAttemptTokenRef.current !== attemptToken) return;
       setIsWaitingRetry(false);
+      setThinking(true);
 
       let succeeded = false;
       let botReply: { reply: string; estimate?: EstimatePayload } | null = null;
+      let failureMessage = 'تعذّر الوصول للذكاء الاصطناعي — حاول لاحقاً';
+      let timeoutHandle: number | undefined;
 
       try {
-        const res = await backend.sendChatMessage({
-          history: nextHistory
-            .filter((m) => m.id !== 'welcome' && !m.isError && !m.isRetryStatus)
-            .map((m) => ({ role: m.role, text: m.text })),
-          message: text,
-          images: readyImages,
-        });
+        const res = await Promise.race([
+          backend.sendChatMessage({
+            history: nextHistory
+              .filter((m) => m.id !== 'welcome' && !m.isError && !m.isRetryStatus)
+              .map((m) => ({ role: m.role, text: m.text })),
+            message: text.slice(0, MAX_CHARS),
+            images: readyImages,
+          }),
+          new Promise<{ ok: false; message: string }>((resolve) => {
+            timeoutHandle = window.setTimeout(
+              () =>
+                resolve({
+                  ok: false,
+                  message: 'استغرق الاتصال بالذكاء الاصطناعي وقتاً طويلاً — حاول لاحقاً',
+                }),
+              62000,
+            );
+          }),
+        ]);
 
         if (res.ok) {
           succeeded = true;
           botReply = { reply: res.reply, estimate: res.estimate };
+        } else if (res.message) {
+          failureMessage = res.message;
         }
       } catch {
         succeeded = false;
+      } finally {
+        if (timeoutHandle !== undefined) {
+          window.clearTimeout(timeoutHandle);
+        }
       }
 
       if (retryAttemptTokenRef.current !== attemptToken) return;
@@ -496,6 +446,7 @@ export function ChatScreen() {
       }
 
       if (attempt < 3) {
+        setThinking(false);
         setMessages((prev) => [
           ...prev.filter((m) => !m.isRetryStatus),
           {
@@ -520,12 +471,11 @@ export function ChatScreen() {
         {
           id: `err_${Date.now()}`,
           role: 'bot',
-          text: 'تعذّر الوصول للذكاء الاصطناعي — حاول لاحقاً',
+          text: failureMessage,
           createdAt: new Date().toISOString(),
           isError: true,
         },
       ]);
-      setInput('');
       setThinking(false);
       setIsWaitingRetry(false);
     };
@@ -953,46 +903,6 @@ export function ChatScreen() {
             ))}
           </div>
         )}
-
-        {/* Paste Image URL Input */}
-        <div className="space-y-1">
-          <div className="flex items-center gap-1.5">
-            <div className="relative flex-1">
-              <Link2 className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <input
-                type="text"
-                inputMode="url"
-                value={imageUrlInput}
-                onChange={(e) => {
-                  setImageUrlInput(e.target.value);
-                  if (imageUrlError) setImageUrlError(null);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    handleAddImageUrl();
-                  }
-                }}
-                placeholder="أو الصق رابط صورة"
-                aria-label="أو الصق رابط صورة"
-                className="w-full h-9 rounded-lg border border-slate-200 bg-[#F8FAFC] pr-8 pl-2.5 text-xs text-[#101D35] placeholder:text-slate-400 focus:outline-none focus:border-[#2878E8] focus:bg-white transition-colors"
-              />
-            </div>
-            <button
-              type="button"
-              onClick={handleAddImageUrl}
-              disabled={!imageUrlInput.trim() || thinking || (!attachmentsSent && attachments.length >= MAX_ATTACHED_IMAGES)}
-              aria-label="إضافة رابط صورة"
-              className="h-9 px-2.5 rounded-lg border border-slate-200 bg-[#F8FAFC] hover:bg-slate-100 disabled:opacity-50 text-[#101D35] text-xs font-bold flex items-center gap-1 transition-colors shrink-0"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>إضافة</span>
-            </button>
-          </div>
-          {imageUrlError && (
-            <p className="text-[11px] font-semibold text-red-600 px-1">{imageUrlError}</p>
-          )}
-        </div>
 
         {input.length > 1500 && (
           <div className="text-[11px] text-slate-400 tabular-nums px-1">
