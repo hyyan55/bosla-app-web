@@ -3,7 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 // start-build v1 — Edge Function لتوليد وبناء تطبيق من برومبت واحد.
 // التدفق: تحقق من المستخدم → تحقق من الرصيد → خصم النقاط → إنشاء سجل بناء
-// → البدء المتزامن قبل الرد 200 (مهلة 45 ثانية)، ثم الرد 200 مع {build}، والمتابعة فقط في الخلفية (EdgeRuntime.waitUntil):
+// → البدء المتزامن قبل الرد 200 (مهلة 45 ثانية)، ثم الرد 200 مع {build}، والمتابعة فقط في الخلفية (check-build):
 // توليد الكود بـ Gemini → فرع جديد في bosla-app → دفع الكود → تشغيل workflow
 // build-apk.yml → انتظار النتيجة → تحديث سجل البناء (نجاح: رابط صفحة الـ run؛
 // فشل: استرجاع النقاط).
@@ -57,6 +57,8 @@ const GENERATED_FILES = [
   "app/src/main/java/com/bosla/template/MainActivity.kt",
   "app/src/main/res/layout/activity_main.xml",
   "app/src/main/res/values/strings.xml",
+  "app/src/main/res/values/colors.xml",
+    "app/src/main/res/drawable/ic_launcher_foreground.xml",
 ];
 
 const CORS_HEADERS: Record<string, string> = {
@@ -121,6 +123,7 @@ async function callGeminiOnce(model: string, prompt: string, imagesSection: stri
   const systemPrompt = await systemRes.text();
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const res = await fetch(url, {
+        signal: AbortSignal.timeout(20000),
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -167,7 +170,7 @@ async function generateCode(prompt: string, imagesSection: string, allowedDrawab
         if (Date.now() > deadline) throw new Error("sync phase deadline exceeded (45s)");
       try {
         const files = await callGeminiOnce(model, prompt, imagesSection + extraNote, apiKey, keyIndex);
-        const bad = invalidDrawableRefs(files, allowedDrawables);
+        const bad = invalidDrawableRefs(files, new Set([...allowedDrawables, ...[...files.keys()].filter((p) => p.startsWith("app/src/main/res/drawable/") && p.endsWith(".xml")).map((p) => p.slice("app/src/main/res/drawable/".length, -4))]));
         if (bad.length > 0) {
           console.error(`Gemini ${model} used missing drawables: ${bad.join(", ")} — retrying with correction`);
           extraNote = `\n\nتصحيح مهم: الموارد التالية غير موجودة في المشروع — لا تستخدمها إطلاقاً: ${bad.join(", ")}. استخدم فقط الموارد المسموحة.`;
@@ -522,15 +525,11 @@ const imageFiles = images.map((url, i) => {
   if (buildError || !build) return jsonResponse({ error: "could not create build" }, 500);
 
   // (branch is computed inside startBuildSync and returned as started.branch)
-  const runtime = globalThis as unknown as {
-    EdgeRuntime?: { waitUntil: (p: Promise<unknown>) => void };
-  };
   const deadline = Date.now() + SYNC_PHASE_DEADLINE_MS;
   try {
     const started = await startBuildSync(build.id as string, description, imagesSection, imageFiles, deadline);
     console.log(`[start-build] Build started: ${build.id} branch ${started.branch}`);
-  if (runtime.EdgeRuntime?.waitUntil) runtime.EdgeRuntime.waitUntil(pollBuild(build.id as string, profile.wallet_number, points, started.branch, started.since, started.files, imageFiles));
-  else pollBuild(build.id as string, profile.wallet_number, points, started.branch, started.since, started.files, imageFiles).catch((e) => console.error("[start-build] Background poll failed:", e));
+  
     return jsonResponse({ build: toAppBuild(build, user.id, started.branch) }, 200);
   } catch (syncErr) {
     console.error(`[start-build] Sync start failed, refunding: ${build.id}`, syncErr);
