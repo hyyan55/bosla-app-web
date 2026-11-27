@@ -77,25 +77,26 @@ export function WalletScreen() {
 
   return (
     <MobileShell>
-      {/* Top Bar */}
-      <header className="shrink-0 bg-[#101D35] text-white px-5 py-3.5 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <BoslaLogo size={32} variant="dark" />
-          <h1 className="text-base font-extrabold">محفظتي</h1>
-        </div>
-        <button
-          type="button"
-          onClick={loadWalletData}
-          aria-label="تحديث المحفظة"
-          className="min-w-[40px] min-h-[40px] rounded-xl bg-white/10 hover:bg-white/15 flex items-center justify-center"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-        </button>
-      </header>
+      {/* Fixed Top Bar + Balance Card */}
+      <div className="shrink-0">
+        <header className="bg-[#101D35] text-white px-5 py-3.5 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <BoslaLogo size={32} variant="dark" />
+            <h1 className="text-base font-extrabold">محفظتي</h1>
+          </div>
+          <button
+            type="button"
+            onClick={loadWalletData}
+            aria-label="تحديث المحفظة"
+            className="min-w-[40px] min-h-[40px] rounded-xl bg-white/10 hover:bg-white/15 flex items-center justify-center"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+        </header>
 
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5">
         {/* Navy Balance Card */}
-        <section className="rounded-3xl bg-[#101D35] text-white p-5 shadow-md space-y-4">
+        <div className="px-4 pt-4 pb-2">
+          <section className="rounded-3xl bg-[#101D35] text-white p-5 shadow-md space-y-4">
           <div className="flex items-center justify-between gap-2">
             <div>
               <p className="text-xs text-slate-300">الرصيد المتاح</p>
@@ -145,10 +146,12 @@ export function WalletScreen() {
               )}
             </button>
           </div>
-        </section>
+          </section>
+        </div>
+      </div>
 
-        {/* Transactions History */}
-        <section className="space-y-3">
+      {/* Independent Scrollable Transactions History */}
+      <section className="flex-1 min-h-0 overflow-y-auto px-4 pt-3 pb-4 space-y-3">
           <div className="flex items-center justify-between px-1">
             <h2 className="text-sm font-extrabold text-[#101D35]">سجل المعاملات</h2>
             <span className="text-xs text-slate-500 tabular-nums">
@@ -228,8 +231,7 @@ export function WalletScreen() {
               })}
             </div>
           )}
-        </section>
-      </div>
+      </section>
     </MobileShell>
   );
 }
