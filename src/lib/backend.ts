@@ -322,6 +322,23 @@ function ensureDemoWalletForAccount(store: DemoStore, acc: DemoAccount): void {
   }
 }
 
+function inferTransactionType(
+  rawType: unknown,
+  rawReason: unknown,
+  amount: number,
+): PointsTransaction['type'] {
+  const reason = typeof rawReason === 'string' ? rawReason : '';
+  if (reason === 'welcome gift') return 'gift';
+  if (reason === 'build' && amount < 0) return 'build_debit';
+  if (reason === 'build failed refund') return 'refund';
+  if (reason === 'manual credit by admin' || reason === 'test build credit') {
+    return 'admin_credit';
+  }
+  if (amount > 0) return 'topup';
+  if (amount < 0) return 'build_debit';
+  return rawType === 'debit' ? 'build_debit' : 'topup';
+}
+
 // ============================================================================
 // Public Service Layer API
 // ============================================================================
@@ -665,17 +682,49 @@ export const backend = {
     return withSessionRetry(async () => {
       const { data: userData } = await supabase.auth.getUser();
       if (!userData.user) return [];
+
+      const { data: profile, error: profErr } = await supabase
+        .from('profiles')
+        .select('wallet_number, points_balance')
+        .eq('id', userData.user.id)
+        .single();
+
+      if (profErr) {
+        if (isUnauthorizedError(profErr)) throw profErr;
+        throw new Error('تعذّر تحميل سجل المعاملات');
+      }
+
+      const walletNumber = profile?.wallet_number;
+      if (!walletNumber) return [];
+
       const { data, error } = await supabase
         .from('points_transactions')
-        .select('*')
-        .eq('user_id', userData.user.id)
+        .select('id, wallet_number, amount, type, reason, admin_note, created_at')
+        .eq('wallet_number', walletNumber)
         .order('created_at', { ascending: false });
 
       if (error) {
         if (isUnauthorizedError(error)) throw error;
         throw new Error('تعذّر تحميل سجل المعاملات');
       }
-      return (data || []) as PointsTransaction[];
+
+      let runningBalance = Number(profile.points_balance) || 0;
+      return (data || []).map((row: Record<string, unknown>): PointsTransaction => {
+        const amount = Number(row.amount) || 0;
+        const balanceAfter = runningBalance;
+        runningBalance -= amount;
+
+        return {
+          id: String(row.id),
+          user_id: userData.user!.id,
+          wallet_number: String(row.wallet_number ?? walletNumber),
+          type: inferTransactionType(row.type, row.reason, amount),
+          amount,
+          balance_after: balanceAfter,
+          description: String(row.reason ?? row.admin_note ?? ''),
+          created_at: String(row.created_at),
+        };
+      });
     });
   },
 
@@ -1224,19 +1273,69 @@ export const backend = {
     return withSessionRetry(async () => {
       const { data, error } = await supabase
         .from('points_transactions')
-        .select('*, profiles(wallet_number, full_name)')
+        .select('id, wallet_number, amount, type, reason, admin_note, created_at')
         .order('created_at', { ascending: false })
         .limit(100);
       if (error) {
         if (isUnauthorizedError(error)) throw error;
         throw new Error('تعذّر تحميل سجل المعاملات');
       }
-      return (data || []).map((row: Record<string, unknown>) => {
-        const prof = row.profiles as { wallet_number?: string; full_name?: string } | null;
+
+      const rows = (data || []) as Array<Record<string, unknown>>;
+      const walletNumbers = Array.from(
+        new Set(
+          rows
+            .map((r) => r.wallet_number)
+            .filter((w): w is string => typeof w === 'string' && w.length > 0),
+        ),
+      );
+
+      const profileByWallet = new Map<
+        string,
+        { user_id: string; user_name: string; runningBalance: number }
+      >();
+
+      if (walletNumbers.length > 0) {
+        const { data: profilesData, error: profErr } = await supabase
+          .from('profiles')
+          .select('id, wallet_number, full_name, points_balance')
+          .in('wallet_number', walletNumbers);
+
+        if (profErr) {
+          if (isUnauthorizedError(profErr)) throw profErr;
+          throw new Error('تعذّر تحميل سجل المعاملات');
+        }
+
+        for (const p of (profilesData || []) as Array<Record<string, unknown>>) {
+          const w = typeof p.wallet_number === 'string' ? p.wallet_number : '';
+          if (!w) continue;
+          profileByWallet.set(w, {
+            user_id: String(p.id ?? ''),
+            user_name: String(p.full_name ?? ''),
+            runningBalance: Number(p.points_balance) || 0,
+          });
+        }
+      }
+
+      return rows.map((row): PointsTransaction => {
+        const walletNumber = typeof row.wallet_number === 'string' ? row.wallet_number : '';
+        const amount = Number(row.amount) || 0;
+        const prof = profileByWallet.get(walletNumber);
+        const balanceAfter = prof ? prof.runningBalance : 0;
+        if (prof) {
+          prof.runningBalance -= amount;
+        }
+
         return {
-          ...(row as unknown as PointsTransaction),
-          wallet_number: prof?.wallet_number,
-          user_name: prof?.full_name,
+          id: String(row.id),
+          user_id: prof?.user_id ?? '',
+          wallet_number: walletNumber || undefined,
+          user_name: prof?.user_name || undefined,
+          type: inferTransactionType(row.type, row.reason, amount),
+          amount,
+          balance_after: balanceAfter,
+          description: String(row.reason ?? row.admin_note ?? ''),
+          created_at: String(row.created_at),
         };
       });
     });
