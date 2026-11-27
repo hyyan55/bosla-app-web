@@ -26,6 +26,10 @@ const TX_LABELS: Record<TransactionType, string> = {
   admin_debit: 'خصم إداري',
 };
 
+const REASON_LABELS: Record<string, string> = {
+  'build refund': 'استرداد — فشل بناء التطبيق',
+};
+
 export function WalletScreen() {
   const { user, settings, refreshProfile, showToast } = useApp();
   const navigate = useNavigate();
@@ -188,6 +192,15 @@ export function WalletScreen() {
             <div className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100 overflow-hidden">
               {transactions.map((tx) => {
                 const positive = tx.amount >= 0;
+                const reasonLabel = REASON_LABELS[tx.description];
+                const isBuildRefund =
+                  tx.description === 'build refund' ||
+                  tx.description === 'استرداد — فشل بناء التطبيق';
+                const displayTitle = reasonLabel || tx.description || TX_LABELS[tx.type];
+                const displaySubtitle = isBuildRefund
+                  ? 'استرداد — فشل بناء التطبيق'
+                  : TX_LABELS[tx.type];
+                const iconType: TransactionType = isBuildRefund ? 'refund' : tx.type;
                 return (
                   <div
                     key={tx.id}
@@ -195,14 +208,14 @@ export function WalletScreen() {
                   >
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="w-9 h-9 rounded-xl bg-slate-100 flex items-center justify-center shrink-0">
-                        {renderTxIcon(tx.type, tx.amount)}
+                        {renderTxIcon(iconType, tx.amount)}
                       </div>
                       <div className="min-w-0">
                         <p className="text-xs font-bold text-[#101D35] truncate">
-                          {tx.description || TX_LABELS[tx.type]}
+                          {displayTitle}
                         </p>
                         <p className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-1.5">
-                          <span>{TX_LABELS[tx.type]}</span>
+                          <span>{displaySubtitle}</span>
                           <span aria-hidden="true">·</span>
                           <span className="tabular-nums">
                             {new Date(tx.created_at).toLocaleDateString('ar-SD', {

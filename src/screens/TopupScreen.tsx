@@ -14,6 +14,12 @@ const METHODS: Array<{ id: TopupMethod; label: string; hint: string; icon: React
   { id: 'mycashy', label: 'ماي كاشي', hint: 'تطبيق ماي كاشي', icon: <Smartphone className="w-5 h-5" /> },
 ];
 
+const METHOD_INSTRUCTIONS: Record<TopupMethod, string> = {
+  bankak: 'حوّل عبر بنكك',
+  sahil: 'عبر تطبيق ساهل',
+  mycashy: 'عبر تطبيق ماي كاشي',
+};
+
 export function TopupScreen() {
   const { settings, showToast } = useApp();
   const navigate = useNavigate();
@@ -166,9 +172,20 @@ export function TopupScreen() {
           </div>
         </section>
 
-        {/* Note */}
-        <div className="rounded-2xl bg-[#FFF9EB] border border-[#D5B45C]/40 px-4 py-3 text-xs font-medium text-[#7B5D12] leading-relaxed">
-          أرسل الرسالة وسيتم شحن نقاطك بعد تأكيد الدفع مباشرة.
+        {/* Method-specific Instructions */}
+        <div className="rounded-2xl bg-[#FFF9EB] border border-[#D5B45C]/40 px-4 py-3.5 text-xs text-[#7B5D12] space-y-2 leading-relaxed">
+          <p className="font-extrabold text-[#5E450A]">
+            تعليمات الدفع ({TOPUP_METHOD_LABELS[method]} — {METHOD_INSTRUCTIONS[method]})
+          </p>
+          <ol className="list-decimal list-inside space-y-1 font-medium">
+            <li>
+              حوّل المبلغ ({totalSdg.toLocaleString('en-US')} ج.س){' '}
+              {method === 'bankak' ? 'عبر بنكك' : METHOD_INSTRUCTIONS[method]}.
+            </li>
+            <li>
+              اضغط «تأكيد طلب الشحن» وستُفتح واتساب لإرسال تفاصيل التحويل إلى الإدارة.
+            </li>
+          </ol>
         </div>
 
         {/* Confirm / WhatsApp Action */}
@@ -185,14 +202,16 @@ export function TopupScreen() {
                 <span>جاري تسجيل الطلب…</span>
               </>
             ) : (
-              <span>تأكيد</span>
+              <span>تأكيد طلب الشحن</span>
             )}
           </button>
         ) : (
           <div className="rounded-2xl bg-emerald-50 border border-emerald-200 p-4 space-y-3">
             <div className="flex items-center gap-2 text-emerald-900 font-bold text-xs">
               <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-              <span>تم تسجيل طلبك! اضغط الزر أدناه لإرسال التفاصيل عبر واتساب:</span>
+              <span>
+                تم تسجيل طلبك عبر {TOPUP_METHOD_LABELS[method]}! اضغط الزر أدناه لإرسال التفاصيل عبر واتساب:
+              </span>
             </div>
             <a
               href={whatsappUrl}

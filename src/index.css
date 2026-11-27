@@ -11,12 +11,23 @@
   }
 
   html,
+  body,
+  #root {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  html,
   body {
     font-family: 'Cairo', 'Tajawal', system-ui, -apple-system, sans-serif;
     background-color: #EDF1F7;
     color: #101D35;
     direction: rtl;
-    min-height: 100%;
+  }
+
+  body {
+    margin: 0;
+    overscroll-behavior: none;
   }
 
   button,

@@ -476,7 +476,7 @@ function inferTransactionType(
   const reason = typeof rawReason === 'string' ? rawReason : '';
   if (reason === 'welcome gift') return 'gift';
   if (reason === 'build' && amount < 0) return 'build_debit';
-  if (reason === 'build failed refund') return 'refund';
+  if (reason === 'build refund' || reason === 'build failed refund') return 'refund';
   if (reason === 'manual credit by admin' || reason === 'test build credit') {
     return 'admin_credit';
   }
@@ -911,6 +911,11 @@ export const backend = {
         const amount = Number(row.amount) || 0;
         const balanceAfter = runningBalance;
         runningBalance -= amount;
+        const rawDescription = String(row.reason ?? row.admin_note ?? '');
+        const description =
+          row.reason === 'build refund'
+            ? 'استرداد — فشل بناء التطبيق'
+            : rawDescription;
 
         return {
           id: String(row.id),
@@ -919,7 +924,7 @@ export const backend = {
           type: inferTransactionType(row.type, row.reason, amount),
           amount,
           balance_after: balanceAfter,
-          description: String(row.reason ?? row.admin_note ?? ''),
+          description,
           created_at: String(row.created_at),
         };
       });
@@ -1594,7 +1599,11 @@ export const backend = {
     const rows = extractRows(res, ['transactions', 'points_transactions']);
     return rows.map((row): PointsTransaction => {
       const amount = Number(row.amount ?? 0) || 0;
-      const rawDesc = row.description ?? row.reason ?? row.admin_note ?? '';
+      const rawDesc = String(row.description ?? row.reason ?? row.admin_note ?? '');
+      const description =
+        row.reason === 'build refund' || rawDesc === 'build refund'
+          ? 'استرداد — فشل بناء التطبيق'
+          : rawDesc;
       return {
         id: String(row.id ?? ''),
         user_id: String(row.user_id ?? row.profile_id ?? ''),
@@ -1603,7 +1612,7 @@ export const backend = {
         type: inferTransactionType(row.type, row.reason ?? row.description, amount),
         amount,
         balance_after: Number(row.balance_after ?? 0) || 0,
-        description: String(rawDesc),
+        description,
         created_at: String(row.created_at ?? ''),
       };
     });

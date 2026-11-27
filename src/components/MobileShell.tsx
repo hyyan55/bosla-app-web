@@ -28,9 +28,9 @@ export function MobileShell({
   const isNative = Capacitor.isNativePlatform();
 
   return (
-    <div className="min-h-dvh w-full bg-[#E6ECF5] flex justify-center items-stretch sm:py-4 sm:px-4">
+    <div className="h-[100dvh] w-full bg-[#E6ECF5] flex justify-center items-stretch sm:items-center sm:py-4 sm:px-4 overflow-hidden">
       <div
-        className={`relative w-full max-w-[430px] min-h-dvh sm:min-h-[calc(100dvh-2rem)] sm:max-h-[900px] sm:rounded-[34px] sm:shadow-[0_24px_70px_-15px_rgba(16,29,53,0.28)] sm:border sm:border-slate-300/80 overflow-hidden flex flex-col ${
+        className={`relative w-full max-w-[430px] h-[100dvh] sm:h-[calc(100dvh-2rem)] sm:max-h-[900px] sm:rounded-[34px] sm:shadow-[0_24px_70px_-15px_rgba(16,29,53,0.28)] sm:border sm:border-slate-300/80 overflow-hidden flex flex-col ${
           bgTone === 'navy' ? 'bg-[#101D35] text-white' : 'bg-[#F5F7FB] text-[#101D35]'
         }`}
       >
@@ -90,7 +90,7 @@ export function MobileShell({
         </AnimatePresence>
 
         {/* Main Screen Body */}
-        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">{children}</div>
+        <main className="flex-1 flex flex-col min-h-0 overflow-y-auto">{children}</main>
 
         {/* Native Bottom Navigation */}
         {showBottomNav && (
