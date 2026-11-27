@@ -339,6 +339,58 @@ function inferTransactionType(
   return rawType === 'debit' ? 'build_debit' : 'topup';
 }
 
+export async function uploadAppImage(file: File, index: number): Promise<string> {
+  if (!supabase) {
+    throw new Error('رفع الصور يتطلب ربط Supabase');
+  }
+
+  return withSessionRetry(async () => {
+    const { data: userData, error: userErr } = await supabase.auth.getUser();
+    if (userErr) {
+      if (isUnauthorizedError(userErr)) throw userErr;
+      throw new Error(userErr.message);
+    }
+    if (!userData.user) {
+      throw new Error('يرجى تسجيل الدخول أولاً');
+    }
+
+    const { data: profile, error: profErr } = await supabase
+      .from('profiles')
+      .select('wallet_number')
+      .eq('id', userData.user.id)
+      .single();
+
+    if (profErr) {
+      if (isUnauthorizedError(profErr)) throw profErr;
+      throw new Error(profErr.message || 'تعذّر التحقق من رقم المحفظة');
+    }
+
+    const walletNumber = profile?.wallet_number;
+    if (!walletNumber) {
+      throw new Error('لم يتم العثور على رقم المحفظة');
+    }
+
+    const sanitizedName = (file.name || 'image')
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]/g, '_');
+    const path = `${walletNumber}/${Date.now()}_${index}_${sanitizedName}`;
+
+    const { error: uploadErr } = await supabase.storage
+      .from('app-images')
+      .upload(path, file, {
+        contentType: file.type || undefined,
+        upsert: false,
+      });
+
+    if (uploadErr) {
+      if (isUnauthorizedError(uploadErr)) throw uploadErr;
+      throw new Error(uploadErr.message);
+    }
+
+    return supabase.storage.from('app-images').getPublicUrl(path).data.publicUrl;
+  });
+}
+
 // ============================================================================
 // Public Service Layer API
 // ============================================================================
@@ -866,10 +918,14 @@ export const backend = {
     });
   },
 
-  async sendChatMessage(params: {
-    history: Array<{ role: 'user' | 'bot'; text: string }>;
-    message: string;
-  }): Promise<
+  async sendChatMessage(
+    params: {
+      history: Array<{ role: 'user' | 'bot'; text: string }>;
+      message: string;
+      images?: string[];
+    },
+    images?: string[],
+  ): Promise<
     | { ok: true; reply: string; estimate?: EstimatePayload }
     | { ok: false; message: string }
   > {
@@ -881,6 +937,7 @@ export const backend = {
     }
 
     const settings = await this.getSettings();
+    const attachedImages = params.images ?? images ?? [];
 
     try {
       const res = await withSessionRetry(async () => {
@@ -888,6 +945,7 @@ export const backend = {
           body: {
             message: params.message,
             history: params.history.slice(-6),
+            images: attachedImages,
           },
         });
         if (error) throw error;
@@ -964,10 +1022,14 @@ export const backend = {
     }
   },
 
-  async startBuild(params: {
-    description: string;
-    complexity: ComplexityLevel;
-  }): Promise<
+  async startBuild(
+    params: {
+      description: string;
+      complexity: ComplexityLevel;
+      images?: string[];
+    },
+    images?: string[],
+  ): Promise<
     | { ok: true; build: AppBuild }
     | { ok: false; requiresSupabase?: boolean; insufficientPoints?: boolean; message: string }
   > {
@@ -980,11 +1042,14 @@ export const backend = {
       };
     }
 
+    const attachedImages = params.images ?? images ?? [];
+
     return withSessionRetry(async () => {
       const { data, error } = await supabase.functions.invoke('start-build', {
         body: {
           description: params.description,
           complexity: params.complexity,
+          images: attachedImages,
         },
       });
 
