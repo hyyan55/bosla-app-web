@@ -20,9 +20,7 @@ const MODEL_35_FLASH = 'gemini-3.5-flash';
 const MODEL_38_FLASH = 'gemini-3.8-flash';
 const MODEL_35_FLASH_LITE = 'gemini-3.5-flash-lite';
 const GEMINI_MODELS = [MODEL_35_FLASH, MODEL_38_FLASH, MODEL_35_FLASH_LITE] as const;
-const RETRY_503_DELAYS_MS = [3000, 6000] as const;
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const GLOBAL_DEADLINE_MS = 40_000;
 
 function getErrorStatus(err: unknown): number | null {
   if (err && typeof err === 'object' && 'status' in err) {
@@ -47,6 +45,7 @@ const SYSTEM_INSTRUCTION = `أنت المساعد الذكي لتطبيق "بو�
    - reason = سطر واحد يبدأ بـ "السبب: " يوضح سبب المستوى المختار.`;
 
 Deno.serve(async (req) => {
+  const invocationStartedAt = Date.now();
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
@@ -134,23 +133,24 @@ Deno.serve(async (req) => {
     };
 
     let aiRes: { text?: string } | null = null;
+    attemptLoop:
     for (let k = 0; k < geminiKeys.length; k++) {
       const keyNumber = k + 1;
-      const ai = new GoogleGenAI({ apiKey: geminiKeys[k] });
+      const ai = new GoogleGenAI({ apiKey: geminiKeys[k], httpOptions: { timeout: 20000 } });
       let hit429 = false;
 
       for (const model of GEMINI_MODELS) {
-        for (let attempt = 1; attempt <= 3; attempt++) {
+        if (Date.now() - invocationStartedAt >= GLOBAL_DEADLINE_MS) { console.error(`[chat] global deadline exceeded key #${keyNumber} model=${model} elapsedMs=${Date.now() - invocationStartedAt}`); break attemptLoop; }
           const startedAt = Date.now();
           console.log(
-            `[chat] calling Gemini key #${keyNumber} model=${model} attempt=${attempt} msgLen=${message.length}`,
+            `[chat] calling Gemini key #${keyNumber} model=${model} msgLen=${message.length}`,
           );
           try {
-            const res = await ai.models.generateContent({
+            const timeoutSignal = AbortSignal.timeout(20000); const res = await Promise.race([ai.models.generateContent({
               model,
               contents: prompt,
-              config: requestConfig,
-            });
+              config: requestConfig, }), new Promise<never>((_resolve, reject) => { timeoutSignal.addEventListener("abort", () => { const timeoutError = new Error("Gemini generateContent timed out after 20000ms (status 503)"); timeoutError.name = "AbortError"; reject(timeoutError); }, { once: true }); })
+            ]);
             console.log(
               `[chat] Gemini succeeded key #${keyNumber} model=${model} durationMs=${Date.now() - startedAt}`,
             );
@@ -167,13 +167,8 @@ Deno.serve(async (req) => {
               hit429 = true;
               break;
             }
-            if (status === 503 && attempt < 3) {
-              await sleep(RETRY_503_DELAYS_MS[attempt - 1]);
-              continue;
-            }
             break;
           }
-        }
         if (aiRes || hit429) break;
       }
       if (aiRes) break;
