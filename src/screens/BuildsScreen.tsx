@@ -8,10 +8,23 @@ import {
   XCircle,
   AlertCircle,
   MessageSquarePlus,
+  Loader2,
 } from 'lucide-react';
 import { MobileShell } from '../components/MobileShell';
 import { backend, COMPLEXITY_LABELS } from '../lib/backend';
+import { downloadApkWithProgress } from '../lib/downloadApk';
 import type { AppBuild, BuildStatus } from '../types';
+
+interface BuildDownloadState {
+  phase: 'downloading' | 'installing' | 'done';
+  downloadedBytes: number;
+  totalBytes: number | null;
+  percent: number | null;
+}
+
+function formatMegabytes(bytes: number): string {
+  return (bytes / (1024 * 1024)).toFixed(1);
+}
 
 const STATUS_META: Record<
   BuildStatus,
@@ -42,11 +55,20 @@ export function BuildsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [emptyImgFailed, setEmptyImgFailed] = useState(false);
+  const [downloads, setDownloads] = useState<Record<string, BuildDownloadState>>({});
+  const [installErrors, setInstallErrors] = useState<Record<string, string>>({});
 
   // Pull-to-refresh touch tracking
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const touchStartY = useRef<number | null>(null);
   const [pullOffset, setPullOffset] = useState(0);
+  const doneTimersRef = useRef<Record<string, number>>({});
+
+  useEffect(() => {
+    return () => {
+      Object.values(doneTimersRef.current).forEach((id) => window.clearTimeout(id));
+    };
+  }, []);
 
   const loadBuilds = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -100,6 +122,108 @@ export function BuildsScreen() {
     }
     touchStartY.current = null;
     setPullOffset(0);
+  };
+
+  const handleDownloadApk = async (build: AppBuild) => {
+    if (!build.apk_url) return;
+    const current = downloads[build.id];
+    if (current && (current.phase === 'downloading' || current.phase === 'installing')) {
+      return;
+    }
+
+    if (doneTimersRef.current[build.id]) {
+      window.clearTimeout(doneTimersRef.current[build.id]);
+      delete doneTimersRef.current[build.id];
+    }
+
+    setInstallErrors((prev) => {
+      if (!prev[build.id]) return prev;
+      const next = { ...prev };
+      delete next[build.id];
+      return next;
+    });
+
+    setDownloads((prev) => ({
+      ...prev,
+      [build.id]: {
+        phase: 'downloading',
+        downloadedBytes: 0,
+        totalBytes: null,
+        percent: null,
+      },
+    }));
+
+    const fileName = `bosla-app-${build.id.slice(0, 8)}.apk`;
+
+    try {
+      const outcome = await downloadApkWithProgress(
+        build.apk_url,
+        fileName,
+        ({ downloadedBytes, totalBytes, percent }) => {
+          setDownloads((prev) => ({
+            ...prev,
+            [build.id]: {
+              phase: prev[build.id]?.phase === 'installing' ? 'installing' : 'downloading',
+              downloadedBytes,
+              totalBytes,
+              percent,
+            },
+          }));
+        },
+        (phase) => {
+          setDownloads((prev) => ({
+            ...prev,
+            [build.id]: {
+              ...(prev[build.id] ?? {
+                downloadedBytes: 0,
+                totalBytes: null,
+                percent: null,
+              }),
+              phase,
+            },
+          }));
+        },
+      );
+
+      if (outcome === 'web') {
+        setDownloads((prev) => ({
+          ...prev,
+          [build.id]: {
+            ...(prev[build.id] ?? {
+              downloadedBytes: 0,
+              totalBytes: null,
+              percent: 100,
+            }),
+            phase: 'done',
+            percent: 100,
+          },
+        }));
+        doneTimersRef.current[build.id] = window.setTimeout(() => {
+          setDownloads((prev) => {
+            const next = { ...prev };
+            delete next[build.id];
+            return next;
+          });
+          delete doneTimersRef.current[build.id];
+        }, 2500);
+      } else {
+        setDownloads((prev) => {
+          const next = { ...prev };
+          delete next[build.id];
+          return next;
+        });
+      }
+    } catch {
+      setDownloads((prev) => {
+        const next = { ...prev };
+        delete next[build.id];
+        return next;
+      });
+      setInstallErrors((prev) => ({
+        ...prev,
+        [build.id]: 'تعذّر فتح مثبّت التطبيق — تأكد من صلاحية التثبيت وحاول مجدداً.',
+      }));
+    }
   };
 
   return (
@@ -225,17 +349,79 @@ export function BuildsScreen() {
                   </p>
                 )}
 
-                {b.status === 'ready' && b.apk_url && (
-                  <a
-                    href={b.apk_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="w-full min-h-[44px] rounded-xl bg-[#2878E8] hover:bg-[#1E66CC] text-white font-bold text-xs flex items-center justify-center gap-2 transition-colors"
-                  >
-                    <Download className="w-4 h-4" />
-                    <span>تنزيل APK</span>
-                  </a>
-                )}
+                {b.status === 'ready' && b.apk_url && (() => {
+                  const dl = downloads[b.id];
+                  const installErr = installErrors[b.id];
+                  const isDownloading = dl?.phase === 'downloading';
+                  const isInstalling = dl?.phase === 'installing';
+                  const isDone = dl?.phase === 'done';
+                  const isBusy = isDownloading || isInstalling;
+
+                  return (
+                    <div className="space-y-2">
+                      <button
+                        type="button"
+                        disabled={isBusy || isDone}
+                        onClick={() => handleDownloadApk(b)}
+                        className="w-full min-h-[44px] px-3 rounded-xl bg-[#2878E8] hover:bg-[#1E66CC] disabled:opacity-80 text-white font-bold text-xs flex items-center justify-center gap-2 transition-colors"
+                      >
+                        {isDownloading ? (
+                          dl.totalBytes !== null ? (
+                            <span className="tabular-nums">
+                              جاري التحميل {dl.percent ?? 0}% — {formatMegabytes(dl.downloadedBytes)} / {formatMegabytes(dl.totalBytes)} م.ب
+                            </span>
+                          ) : (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                              <span className="tabular-nums">
+                                جاري التحميل {formatMegabytes(dl.downloadedBytes)} م.ب
+                              </span>
+                            </>
+                          )
+                        ) : isInstalling ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                            <span>جاري التثبيت…</span>
+                          </>
+                        ) : isDone ? (
+                          <>
+                            <CheckCircle2 className="w-4 h-4 shrink-0" />
+                            <span>تم التنزيل</span>
+                          </>
+                        ) : (
+                          <>
+                            <Download className="w-4 h-4 shrink-0" />
+                            <span>تنزيل APK</span>
+                          </>
+                        )}
+                      </button>
+
+                      {(isDownloading || isInstalling) && (
+                        <div className="w-full h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                          {isInstalling ? (
+                            <div
+                              className="h-full bg-[#2878E8] transition-all duration-150"
+                              style={{ width: '100%' }}
+                            />
+                          ) : dl.totalBytes !== null ? (
+                            <div
+                              className="h-full bg-[#2878E8] transition-all duration-150"
+                              style={{ width: `${dl.percent ?? 0}%` }}
+                            />
+                          ) : (
+                            <div className="h-full w-1/2 bg-[#2878E8] rounded-full animate-pulse" />
+                          )}
+                        </div>
+                      )}
+
+                      {installErr && (
+                        <p className="text-xs text-red-700 bg-red-50 rounded-xl px-3 py-2">
+                          {installErr}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
               </article>
             );
           })
