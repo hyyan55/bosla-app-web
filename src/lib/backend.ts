@@ -1635,4 +1635,54 @@ export const backend = {
       return { ok: true, message: 'تم حفظ الإعدادات بنجاح' };
     });
   },
+
+  async registerDeviceToken(params: {
+    fcmToken: string;
+    platform: 'android' | 'ios' | 'web';
+  }): Promise<{ ok: boolean }> {
+    const cleanToken = params.fcmToken.trim();
+    if (!cleanToken) return { ok: false };
+    if (!supabase) return { ok: true };
+
+    try {
+      return await withSessionRetry(async () => {
+        const { data: userData } = await supabase.auth.getUser();
+        if (!userData.user) return { ok: false };
+
+        const { data: profile, error: profErr } = await supabase
+          .from('profiles')
+          .select('wallet_number')
+          .eq('id', userData.user.id)
+          .single();
+
+        if (profErr) {
+          if (isUnauthorizedError(profErr)) throw profErr;
+          return { ok: false };
+        }
+
+        const walletNumber = profile?.wallet_number;
+        if (!walletNumber) return { ok: false };
+
+        const { error } = await supabase
+          .from('device_tokens')
+          .upsert(
+            {
+              wallet_number: walletNumber,
+              fcm_token: cleanToken,
+              platform: params.platform,
+            },
+            { onConflict: 'fcm_token' },
+          );
+
+        if (error) {
+          if (isUnauthorizedError(error)) throw error;
+          return { ok: false };
+        }
+
+        return { ok: true };
+      });
+    } catch {
+      return { ok: false };
+    }
+  },
 };

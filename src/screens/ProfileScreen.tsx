@@ -12,7 +12,11 @@ import { MobileShell } from '../components/MobileShell';
 import { BoslaLogo } from '../components/BoslaLogo';
 import { OutlinedField } from '../components/OutlinedField';
 import { backend } from '../lib/backend';
-import { requestPushPermission } from '../lib/firebase';
+import {
+  getBuildNotificationStatus,
+  requestAndRegisterBuildNotifications,
+} from '../lib/pushRegistration';
+import type { NotificationPermissionStatus } from '../lib/firebase';
 import { useApp } from '../context/AppContext';
 
 export function ProfileScreen() {
@@ -27,6 +31,20 @@ export function ProfileScreen() {
   const [savingPass, setSavingPass] = useState(false);
 
   const [enablingPush, setEnablingPush] = useState(false);
+  const [notifStatus, setNotifStatus] = useState<NotificationPermissionStatus>('prompt');
+  const [notifDenied, setNotifDenied] = useState(false);
+
+  React.useEffect(() => {
+    let active = true;
+    void getBuildNotificationStatus().then(({ status, rememberedDenied }) => {
+      if (!active) return;
+      setNotifStatus(status);
+      setNotifDenied(rememberedDenied);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handlePasswordChange = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -56,11 +74,18 @@ export function ProfileScreen() {
   const handleEnablePush = async () => {
     setEnablingPush(true);
     try {
-      const res = await requestPushPermission();
+      const res = await requestAndRegisterBuildNotifications();
+      setNotifStatus(res.status);
+      setNotifDenied(!res.granted && res.supported);
       if (res.granted) {
-        showToast('تم تفعيل إشعارات التطبيق بنجاح', 'success');
+        showToast('تم تفعيل إشعارات جاهزية البناء بنجاح', 'success');
       } else {
-        showToast(res.reason || 'تعذّر تفعيل الإشعارات', 'error');
+        showToast(
+          res.status === 'denied'
+            ? 'تم رفض إذن الإشعارات — يمكنك تفعيله من إعدادات التطبيق أو المتصفح'
+            : res.reason || 'تعذّر تفعيل الإشعارات',
+          'error',
+        );
       }
     } finally {
       setEnablingPush(false);
@@ -174,13 +199,34 @@ export function ProfileScreen() {
             type="button"
             onClick={handleEnablePush}
             disabled={enablingPush}
-            className="w-full min-h-[52px] px-4 flex items-center justify-between hover:bg-slate-50 transition-colors"
+            className="w-full min-h-[56px] px-4 py-2.5 flex items-center justify-between hover:bg-slate-50 transition-colors text-right"
           >
-            <div className="flex items-center gap-3">
-              <Bell className="w-4 h-4 text-[#2878E8]" />
-              <span className="text-sm font-bold text-[#101D35]">تفعيل إشعارات الجاهزية</span>
+            <div className="flex items-center gap-3 min-w-0">
+              <Bell className="w-4 h-4 text-[#2878E8] shrink-0" />
+              <div className="min-w-0">
+                <span className="block text-sm font-bold text-[#101D35]">
+                  تفعيل إشعارات الجاهزية
+                </span>
+                <span
+                  className={`block text-[11px] mt-0.5 ${
+                    notifStatus === 'granted'
+                      ? 'text-emerald-600 font-semibold'
+                      : notifDenied
+                        ? 'text-amber-700 font-semibold'
+                        : 'text-slate-500'
+                  }`}
+                >
+                  {notifStatus === 'granted'
+                    ? 'مفعّلة — تصلك تنبيهات اكتمال البناء'
+                    : notifDenied
+                      ? 'مرفوضة — اضغط لإعادة المحاولة أو فعّلها من الإعدادات'
+                      : notifStatus === 'unsupported'
+                        ? 'غير مدعومة في هذا المتصفح'
+                        : 'اضغط للسماح بإشعارات جاهزية التطبيق'}
+                </span>
+              </div>
             </div>
-            <ChevronLeft className="w-4 h-4 text-slate-400" />
+            <ChevronLeft className="w-4 h-4 text-slate-400 shrink-0" />
           </button>
 
           {/* Academy Link */}

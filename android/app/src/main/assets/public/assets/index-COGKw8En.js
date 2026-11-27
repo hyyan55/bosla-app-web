@@ -12633,6 +12633,21 @@ function isModifiedEvent(event) {
 function shouldProcessLinkClick(event, target) {
 	return event.button === 0 && (!target || target === "_self") && !isModifiedEvent(event);
 }
+function createSearchParams(init = "") {
+	return new URLSearchParams(typeof init === "string" || Array.isArray(init) || init instanceof URLSearchParams ? init : Object.keys(init).reduce((memo2, key) => {
+		let value = init[key];
+		return memo2.concat(Array.isArray(value) ? value.map((v) => [key, v]) : [[key, value]]);
+	}, []));
+}
+function getSearchParamsForLocation(locationSearch, defaultSearchParams) {
+	let searchParams = createSearchParams(locationSearch);
+	if (defaultSearchParams) defaultSearchParams.forEach((_, key) => {
+		if (!searchParams.has(key)) defaultSearchParams.getAll(key).forEach((value) => {
+			searchParams.append(key, value);
+		});
+	});
+	return searchParams;
+}
 var _formDataSupportsSubmitter = null;
 function isFormDataSubmitterSupported() {
 	if (_formDataSupportsSubmitter === null) try {
@@ -13320,6 +13335,19 @@ function useLinkClickHandler(to, { target, replace: replaceProp, mask, state, pr
 		useTransitions
 	]);
 }
+function useSearchParams(defaultInit) {
+	warning$1(typeof URLSearchParams !== "undefined", `You cannot use the \`useSearchParams\` hook in a browser that does not support the URLSearchParams API. If you need to support Internet Explorer 11, we recommend you load a polyfill such as https://github.com/ungap/url-search-params.`);
+	let defaultSearchParamsRef = import_react.useRef(createSearchParams(defaultInit));
+	let hasSetSearchParamsRef = import_react.useRef(false);
+	let location = useLocation();
+	let searchParams = import_react.useMemo(() => getSearchParamsForLocation(location.search, hasSetSearchParamsRef.current ? null : defaultSearchParamsRef.current), [location.search]);
+	let navigate = useNavigate();
+	return [searchParams, import_react.useCallback((nextInit, navigateOptions) => {
+		const newSearchParams = createSearchParams(typeof nextInit === "function" ? nextInit(new URLSearchParams(searchParams)) : nextInit);
+		hasSetSearchParamsRef.current = true;
+		navigate("?" + newSearchParams, navigateOptions);
+	}, [navigate, searchParams])];
+}
 var fetcherId = 0;
 var getUniqueFetcherId = () => `__${String(++fetcherId)}__`;
 function useSubmit() {
@@ -13492,8 +13520,626 @@ function useViewTransitionState(to, { relative } = {}) {
 	let nextPath = stripBasename(vtContext.nextLocation.pathname, basename) || vtContext.nextLocation.pathname;
 	return matchPath(path.pathname, nextPath) != null || matchPath(path.pathname, currentPath) != null;
 }
-// node_modules/@supabase/supabase-js/dist/tracingRegistry.mjs
+// node_modules/@capacitor/core/dist/index.js
 var import_client = require_client();
+/*! Capacitor: https://capacitorjs.com/ - MIT License */
+var ExceptionCode;
+(function(ExceptionCode) {
+	/**
+	* API is not implemented.
+	*
+	* This usually means the API can't be used because it is not implemented for
+	* the current platform.
+	*/
+	ExceptionCode["Unimplemented"] = "UNIMPLEMENTED";
+	/**
+	* API is not available.
+	*
+	* This means the API can't be used right now because:
+	*   - it is currently missing a prerequisite, such as network connectivity
+	*   - it requires a particular platform or browser version
+	*/
+	ExceptionCode["Unavailable"] = "UNAVAILABLE";
+})(ExceptionCode || (ExceptionCode = {}));
+var CapacitorException = class extends Error {
+	constructor(message, code, data) {
+		super(message);
+		this.message = message;
+		this.code = code;
+		this.data = data;
+	}
+};
+var getPlatformId = (win) => {
+	var _a, _b;
+	if (win === null || win === void 0 ? void 0 : win.androidBridge) return "android";
+	else if ((_b = (_a = win === null || win === void 0 ? void 0 : win.webkit) === null || _a === void 0 ? void 0 : _a.messageHandlers) === null || _b === void 0 ? void 0 : _b.bridge) return "ios";
+	else return "web";
+};
+var createCapacitor = (win) => {
+	const capCustomPlatform = win.CapacitorCustomPlatform || null;
+	const cap = win.Capacitor || {};
+	const Plugins = cap.Plugins = cap.Plugins || {};
+	const getPlatform = () => {
+		return capCustomPlatform !== null ? capCustomPlatform.name : getPlatformId(win);
+	};
+	const isNativePlatform = () => getPlatform() !== "web";
+	const isPluginAvailable = (pluginName) => {
+		const plugin = registeredPlugins.get(pluginName);
+		if (plugin === null || plugin === void 0 ? void 0 : plugin.platforms.has(getPlatform())) return true;
+		if (getPluginHeader(pluginName)) return true;
+		return false;
+	};
+	const getPluginHeader = (pluginName) => {
+		var _a;
+		return (_a = cap.PluginHeaders) === null || _a === void 0 ? void 0 : _a.find((h) => h.name === pluginName);
+	};
+	const handleError = (err) => win.console.error(err);
+	const registeredPlugins = /* @__PURE__ */ new Map();
+	const registerPlugin = (pluginName, jsImplementations = {}) => {
+		const registeredPlugin = registeredPlugins.get(pluginName);
+		if (registeredPlugin) {
+			console.warn(`Capacitor plugin "${pluginName}" already registered. Cannot register plugins twice.`);
+			return registeredPlugin.proxy;
+		}
+		const platform = getPlatform();
+		const pluginHeader = getPluginHeader(pluginName);
+		let jsImplementation;
+		const loadPluginImplementation = async () => {
+			if (!jsImplementation && platform in jsImplementations) jsImplementation = typeof jsImplementations[platform] === "function" ? jsImplementation = await jsImplementations[platform]() : jsImplementation = jsImplementations[platform];
+			else if (capCustomPlatform !== null && !jsImplementation && "web" in jsImplementations) jsImplementation = typeof jsImplementations["web"] === "function" ? jsImplementation = await jsImplementations["web"]() : jsImplementation = jsImplementations["web"];
+			return jsImplementation;
+		};
+		const createPluginMethod = (impl, prop) => {
+			var _a, _b;
+			if (pluginHeader) {
+				const methodHeader = pluginHeader === null || pluginHeader === void 0 ? void 0 : pluginHeader.methods.find((m) => prop === m.name);
+				if (methodHeader) {
+					if (methodHeader.rtype === "promise") return (options) => cap.nativePromise(pluginName, prop.toString(), options);
+					else return (options, callback) => cap.nativeCallback(pluginName, prop.toString(), options, callback);
+				} else if (impl) return (_a = impl[prop]) === null || _a === void 0 ? void 0 : _a.bind(impl);
+			} else if (impl) return (_b = impl[prop]) === null || _b === void 0 ? void 0 : _b.bind(impl);
+			else throw new CapacitorException(`"${pluginName}" plugin is not implemented on ${platform}`, ExceptionCode.Unimplemented);
+		};
+		const createPluginMethodWrapper = (prop) => {
+			let remove;
+			const wrapper = (...args) => {
+				const p = loadPluginImplementation().then((impl) => {
+					const fn = createPluginMethod(impl, prop);
+					if (fn) {
+						const p = fn(...args);
+						remove = p === null || p === void 0 ? void 0 : p.remove;
+						return p;
+					} else throw new CapacitorException(`"${pluginName}.${prop}()" is not implemented on ${platform}`, ExceptionCode.Unimplemented);
+				});
+				if (prop === "addListener") p.remove = async () => remove();
+				return p;
+			};
+			wrapper.toString = () => `${prop.toString()}() { [capacitor code] }`;
+			Object.defineProperty(wrapper, "name", {
+				value: prop,
+				writable: false,
+				configurable: false
+			});
+			return wrapper;
+		};
+		const addListener = createPluginMethodWrapper("addListener");
+		const removeListener = createPluginMethodWrapper("removeListener");
+		const addListenerNative = (eventName, callback) => {
+			const call = addListener({ eventName }, callback).then((callbackId) => callbackId);
+			const remove = async () => {
+				const callbackId = await call;
+				await removeListener({
+					eventName,
+					callbackId
+				});
+			};
+			const p = new Promise((resolve) => call.then(() => resolve({ remove })));
+			p.remove = async () => {
+				console.warn(`Using addListener() without 'await' is deprecated.`);
+				await remove();
+			};
+			return p;
+		};
+		const proxy = new Proxy({}, { get(_, prop) {
+			switch (prop) {
+				case "$$typeof": return;
+				case "toJSON": return () => ({});
+				case "addListener": return pluginHeader ? addListenerNative : addListener;
+				case "removeListener": return removeListener;
+				default: return createPluginMethodWrapper(prop);
+			}
+		} });
+		Plugins[pluginName] = proxy;
+		registeredPlugins.set(pluginName, {
+			name: pluginName,
+			proxy,
+			platforms: /* @__PURE__ */ new Set([...Object.keys(jsImplementations), ...pluginHeader ? [platform] : []])
+		});
+		return proxy;
+	};
+	if (!cap.convertFileSrc) cap.convertFileSrc = (filePath) => filePath;
+	cap.getPlatform = getPlatform;
+	cap.handleError = handleError;
+	cap.isNativePlatform = isNativePlatform;
+	cap.isPluginAvailable = isPluginAvailable;
+	cap.registerPlugin = registerPlugin;
+	cap.Exception = CapacitorException;
+	cap.DEBUG = !!cap.DEBUG;
+	cap.isLoggingEnabled = !!cap.isLoggingEnabled;
+	return cap;
+};
+var initCapacitorGlobal = (win) => win.Capacitor = createCapacitor(win);
+var Capacitor = /*#__PURE__*/ initCapacitorGlobal(typeof globalThis !== "undefined" ? globalThis : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : typeof global !== "undefined" ? global : {});
+var registerPlugin = Capacitor.registerPlugin;
+/**
+* Base class web plugins should extend.
+*/
+var WebPlugin = class {
+	constructor() {
+		this.listeners = {};
+		this.retainedEventArguments = {};
+		this.windowListeners = {};
+	}
+	addListener(eventName, listenerFunc) {
+		let firstListener = false;
+		if (!this.listeners[eventName]) {
+			this.listeners[eventName] = [];
+			firstListener = true;
+		}
+		this.listeners[eventName].push(listenerFunc);
+		const windowListener = this.windowListeners[eventName];
+		if (windowListener && !windowListener.registered) this.addWindowListener(windowListener);
+		if (firstListener) this.sendRetainedArgumentsForEvent(eventName);
+		const remove = async () => this.removeListener(eventName, listenerFunc);
+		return Promise.resolve({ remove });
+	}
+	async removeAllListeners() {
+		this.listeners = {};
+		for (const listener in this.windowListeners) this.removeWindowListener(this.windowListeners[listener]);
+		this.windowListeners = {};
+	}
+	notifyListeners(eventName, data, retainUntilConsumed) {
+		const listeners = this.listeners[eventName];
+		if (!listeners) {
+			if (retainUntilConsumed) {
+				let args = this.retainedEventArguments[eventName];
+				if (!args) args = [];
+				args.push(data);
+				this.retainedEventArguments[eventName] = args;
+			}
+			return;
+		}
+		listeners.forEach((listener) => listener(data));
+	}
+	hasListeners(eventName) {
+		var _a;
+		return !!((_a = this.listeners[eventName]) === null || _a === void 0 ? void 0 : _a.length);
+	}
+	registerWindowListener(windowEventName, pluginEventName) {
+		this.windowListeners[pluginEventName] = {
+			registered: false,
+			windowEventName,
+			pluginEventName,
+			handler: (event) => {
+				this.notifyListeners(pluginEventName, event);
+			}
+		};
+	}
+	unimplemented(msg = "not implemented") {
+		return new Capacitor.Exception(msg, ExceptionCode.Unimplemented);
+	}
+	unavailable(msg = "not available") {
+		return new Capacitor.Exception(msg, ExceptionCode.Unavailable);
+	}
+	async removeListener(eventName, listenerFunc) {
+		const listeners = this.listeners[eventName];
+		if (!listeners) return;
+		const index = listeners.indexOf(listenerFunc);
+		if (index !== -1) this.listeners[eventName].splice(index, 1);
+		if (!this.listeners[eventName].length) this.removeWindowListener(this.windowListeners[eventName]);
+	}
+	addWindowListener(handle) {
+		window.addEventListener(handle.windowEventName, handle.handler);
+		handle.registered = true;
+	}
+	removeWindowListener(handle) {
+		if (!handle) return;
+		window.removeEventListener(handle.windowEventName, handle.handler);
+		handle.registered = false;
+	}
+	sendRetainedArgumentsForEvent(eventName) {
+		const args = this.retainedEventArguments[eventName];
+		if (!args) return;
+		delete this.retainedEventArguments[eventName];
+		args.forEach((arg) => {
+			this.notifyListeners(eventName, arg);
+		});
+	}
+};
+/******** END WEB VIEW PLUGIN ********/
+/******** COOKIES PLUGIN ********/
+/**
+* Safely web encode a string value (inspired by js-cookie)
+* @param str The string value to encode
+*/
+var encode$1 = (str) => encodeURIComponent(str).replace(/%(2[346B]|5E|60|7C)/g, decodeURIComponent).replace(/[()]/g, escape);
+/**
+* Safely web decode a string value (inspired by js-cookie)
+* @param str The string value to decode
+*/
+var decode = (str) => str.replace(/(%[\dA-F]{2})+/gi, decodeURIComponent);
+var CapacitorCookiesPluginWeb = class extends WebPlugin {
+	async getCookies() {
+		const cookies = document.cookie;
+		const cookieMap = {};
+		cookies.split(";").forEach((cookie) => {
+			if (cookie.length <= 0) return;
+			let [key, value] = cookie.replace(/=/, "CAP_COOKIE").split("CAP_COOKIE");
+			key = decode(key).trim();
+			value = decode(value).trim();
+			cookieMap[key] = value;
+		});
+		return cookieMap;
+	}
+	async setCookie(options) {
+		try {
+			const encodedKey = encode$1(options.key);
+			const encodedValue = encode$1(options.value);
+			const expires = options.expires ? `; expires=${options.expires.replace("expires=", "")}` : "";
+			const path = (options.path || "/").replace("path=", "");
+			const domain = options.url != null && options.url.length > 0 ? `domain=${options.url}` : "";
+			document.cookie = `${encodedKey}=${encodedValue || ""}${expires}; path=${path}; ${domain};`;
+		} catch (error) {
+			return Promise.reject(error);
+		}
+	}
+	async deleteCookie(options) {
+		try {
+			document.cookie = `${options.key}=; Max-Age=0`;
+		} catch (error) {
+			return Promise.reject(error);
+		}
+	}
+	async clearCookies() {
+		try {
+			const cookies = document.cookie.split(";") || [];
+			for (const cookie of cookies) document.cookie = cookie.replace(/^ +/, "").replace(/=.*/, `=;expires=${(/* @__PURE__ */ new Date()).toUTCString()};path=/`);
+		} catch (error) {
+			return Promise.reject(error);
+		}
+	}
+	async clearAllCookies() {
+		try {
+			await this.clearCookies();
+		} catch (error) {
+			return Promise.reject(error);
+		}
+	}
+};
+registerPlugin("CapacitorCookies", { web: () => new CapacitorCookiesPluginWeb() });
+/**
+* Read in a Blob value and return it as a base64 string
+* @param blob The blob value to convert to a base64 string
+*/
+var readBlobAsBase64 = async (blob) => new Promise((resolve, reject) => {
+	const reader = new FileReader();
+	reader.onload = () => {
+		const base64String = reader.result;
+		resolve(base64String.indexOf(",") >= 0 ? base64String.split(",")[1] : base64String);
+	};
+	reader.onerror = (error) => reject(error);
+	reader.readAsDataURL(blob);
+});
+/**
+* Normalize an HttpHeaders map by lowercasing all of the values
+* @param headers The HttpHeaders object to normalize
+*/
+var normalizeHttpHeaders = (headers = {}) => {
+	const originalKeys = Object.keys(headers);
+	return Object.keys(headers).map((k) => k.toLocaleLowerCase()).reduce((acc, key, index) => {
+		acc[key] = headers[originalKeys[index]];
+		return acc;
+	}, {});
+};
+/**
+* Builds a string of url parameters that
+* @param params A map of url parameters
+* @param shouldEncode true if you should encodeURIComponent() the values (true by default)
+*/
+var buildUrlParams = (params, shouldEncode = true) => {
+	if (!params) return null;
+	return Object.entries(params).reduce((accumulator, entry) => {
+		const [key, value] = entry;
+		let encodedValue;
+		let item;
+		if (Array.isArray(value)) {
+			item = "";
+			value.forEach((str) => {
+				encodedValue = shouldEncode ? encodeURIComponent(str) : str;
+				item += `${key}=${encodedValue}&`;
+			});
+			item.slice(0, -1);
+		} else {
+			encodedValue = shouldEncode ? encodeURIComponent(value) : value;
+			item = `${key}=${encodedValue}`;
+		}
+		return `${accumulator}&${item}`;
+	}, "").substr(1);
+};
+/**
+* Build the RequestInit object based on the options passed into the initial request
+* @param options The Http plugin options
+* @param extra Any extra RequestInit values
+*/
+var buildRequestInit = (options, extra = {}) => {
+	const output = Object.assign({
+		method: options.method || "GET",
+		headers: options.headers
+	}, extra);
+	const type = normalizeHttpHeaders(options.headers)["content-type"] || "";
+	if (typeof options.data === "string") output.body = options.data;
+	else if (type.includes("application/x-www-form-urlencoded")) {
+		const params = new URLSearchParams();
+		for (const [key, value] of Object.entries(options.data || {})) params.set(key, value);
+		output.body = params.toString();
+	} else if (type.includes("multipart/form-data") || options.data instanceof FormData) {
+		const form = new FormData();
+		if (options.data instanceof FormData) options.data.forEach((value, key) => {
+			form.append(key, value);
+		});
+		else for (const key of Object.keys(options.data)) form.append(key, options.data[key]);
+		output.body = form;
+		const headers = new Headers(output.headers);
+		headers.delete("content-type");
+		output.headers = headers;
+	} else if (type.includes("application/json") || typeof options.data === "object") output.body = JSON.stringify(options.data);
+	return output;
+};
+var CapacitorHttpPluginWeb = class extends WebPlugin {
+	/**
+	* Perform an Http request given a set of options
+	* @param options Options to build the HTTP request
+	*/
+	async request(options) {
+		const requestInit = buildRequestInit(options, options.webFetchExtra);
+		const urlParams = buildUrlParams(options.params, options.shouldEncodeUrlParams);
+		const url = urlParams ? `${options.url}?${urlParams}` : options.url;
+		const response = await fetch(url, requestInit);
+		const contentType = response.headers.get("content-type") || "";
+		let { responseType = "text" } = response.ok ? options : {};
+		if (contentType.includes("application/json")) responseType = "json";
+		let data;
+		let blob;
+		switch (responseType) {
+			case "arraybuffer":
+			case "blob":
+				blob = await response.blob();
+				data = await readBlobAsBase64(blob);
+				break;
+			case "json":
+				data = await response.json();
+				break;
+			default: data = await response.text();
+		}
+		const headers = {};
+		response.headers.forEach((value, key) => {
+			headers[key] = value;
+		});
+		return {
+			data,
+			headers,
+			status: response.status,
+			url: response.url
+		};
+	}
+	/**
+	* Perform an Http GET request given a set of options
+	* @param options Options to build the HTTP request
+	*/
+	async get(options) {
+		return this.request(Object.assign(Object.assign({}, options), { method: "GET" }));
+	}
+	/**
+	* Perform an Http POST request given a set of options
+	* @param options Options to build the HTTP request
+	*/
+	async post(options) {
+		return this.request(Object.assign(Object.assign({}, options), { method: "POST" }));
+	}
+	/**
+	* Perform an Http PUT request given a set of options
+	* @param options Options to build the HTTP request
+	*/
+	async put(options) {
+		return this.request(Object.assign(Object.assign({}, options), { method: "PUT" }));
+	}
+	/**
+	* Perform an Http PATCH request given a set of options
+	* @param options Options to build the HTTP request
+	*/
+	async patch(options) {
+		return this.request(Object.assign(Object.assign({}, options), { method: "PATCH" }));
+	}
+	/**
+	* Perform an Http DELETE request given a set of options
+	* @param options Options to build the HTTP request
+	*/
+	async delete(options) {
+		return this.request(Object.assign(Object.assign({}, options), { method: "DELETE" }));
+	}
+};
+registerPlugin("CapacitorHttp", { web: () => new CapacitorHttpPluginWeb() });
+/******** END HTTP PLUGIN ********/
+/******** SYSTEM BARS PLUGIN ********/
+/**
+* Available status bar styles.
+*/
+var SystemBarsStyle;
+(function(SystemBarsStyle) {
+	/**
+	* Light system bar content on a dark background.
+	*
+	* @since 8.0.0
+	*/
+	SystemBarsStyle["Dark"] = "DARK";
+	/**
+	* For dark system bar content on a light background.
+	*
+	* @since 8.0.0
+	*/
+	SystemBarsStyle["Light"] = "LIGHT";
+	/**
+	* The style is based on the device appearance or the underlying content.
+	* If the device is using Dark mode, the system bars content will be light.
+	* If the device is using Light mode, the system bars content will be dark.
+	*
+	* @since 8.0.0
+	*/
+	SystemBarsStyle["Default"] = "DEFAULT";
+})(SystemBarsStyle || (SystemBarsStyle = {}));
+/**
+* Available system bar types.
+*/
+var SystemBarType;
+(function(SystemBarType) {
+	/**
+	* The top status bar on both Android and iOS.
+	*
+	* @since 8.0.0
+	*/
+	SystemBarType["StatusBar"] = "StatusBar";
+	/**
+	* The navigation bar (or gesture bar on iOS) on both Android and iOS.
+	*
+	* @since 8.0.0
+	*/
+	SystemBarType["NavigationBar"] = "NavigationBar";
+})(SystemBarType || (SystemBarType = {}));
+var SystemBarsPluginWeb = class extends WebPlugin {
+	async setStyle() {
+		this.unavailable("not available for web");
+	}
+	async setAnimation() {
+		this.unavailable("not available for web");
+	}
+	async show() {
+		this.unavailable("not available for web");
+	}
+	async hide() {
+		this.unavailable("not available for web");
+	}
+};
+registerPlugin("SystemBars", { web: () => new SystemBarsPluginWeb() });
+// \0vite/preload-helper.js
+var scriptRel = "modulepreload";
+var assetsURL = function(dep) {
+	return "/" + dep;
+};
+var seen = {};
+var failedCssLinks = {};
+var isCssPreloadUrl = function isCssPreloadUrl(url) {
+	return url.pathname.endsWith(".css");
+};
+var preloadOnce = function preloadOnce(seen, href, preload) {
+	if (href in seen) return seen[href];
+	const promise = preload();
+	if (!promise) {
+		seen[href] = void 0;
+		return;
+	}
+	const preloadPromise = promise.then(() => {
+		seen[href] = void 0;
+	}, (err) => {
+		delete seen[href];
+		throw err;
+	});
+	seen[href] = preloadPromise;
+	return preloadPromise;
+};
+var __vitePreload = function preload(baseModule, deps, importerUrl) {
+	let promise = Promise.resolve();
+	if (deps && deps.length > 0) {
+		let preloadedHrefs;
+		const cspNonceMeta = document.querySelector("meta[property=csp-nonce]");
+		const cspNonce = cspNonceMeta?.nonce || cspNonceMeta?.getAttribute("nonce");
+		function allSettled(promises) {
+			return Promise.all(promises.map((p) => Promise.resolve(p).then((value) => ({
+				status: "fulfilled",
+				value
+			}), (reason) => ({
+				status: "rejected",
+				reason
+			}))));
+		}
+		function importMetaResolve(specifier) {
+			if (import.meta.resolve) return new URL(import.meta.resolve(specifier));
+			return new URL(
+				specifier,
+				/** #__KEEP__ */
+				import.meta.url
+			);
+		}
+		promise = allSettled(deps.map((depString) => {
+			depString = assetsURL(depString, importerUrl);
+			const dep = importMetaResolve(depString);
+			const isCss = isCssPreloadUrl(dep);
+			return preloadOnce(seen, dep.href, () => {
+				if (preloadedHrefs === void 0) {
+					preloadedHrefs = {
+						all: /* @__PURE__ */ new Set(),
+						styles: /* @__PURE__ */ new Set()
+					};
+					const links = document.getElementsByTagName("link");
+					for (let i = links.length - 1; i >= 0; i--) {
+						const link = links[i];
+						preloadedHrefs.all.add(link.href);
+						if (link.rel === "stylesheet") preloadedHrefs.styles.add(link.href);
+					}
+				}
+				const preloadedHrefSet = isCss ? preloadedHrefs.styles : preloadedHrefs.all;
+				const failedCssLink = isCss ? failedCssLinks[dep.href] : void 0;
+				if (!failedCssLink && preloadedHrefSet.has(dep.href)) return;
+				const link = document.createElement("link");
+				link.rel = isCss ? "stylesheet" : scriptRel;
+				if (!isCss) link.as = "script";
+				link.crossOrigin = "";
+				link.href = dep.href;
+				if (cspNonce) link.setAttribute("nonce", cspNonce);
+				if (failedCssLink) delete failedCssLinks[dep.href];
+				if (failedCssLink?.isConnected) failedCssLink.replaceWith(link);
+				else document.head.appendChild(link);
+				if (isCss) return new Promise((res, rej) => {
+					const handleSettle = (e) => {
+						link.removeEventListener("load", handleSettle);
+						link.removeEventListener("error", handleSettle);
+						if (e.type === "error") {
+							failedCssLinks[dep.href] = link;
+							rej(/* @__PURE__ */ new Error(`Unable to preload CSS for ${dep}`));
+						} else res(e);
+					};
+					link.addEventListener("load", handleSettle);
+					link.addEventListener("error", handleSettle);
+				});
+			});
+		}).filter((p) => p !== void 0));
+	}
+	function handlePreloadError(err) {
+		const e = new Event("vite:preloadError", { cancelable: true });
+		e.payload = err;
+		window.dispatchEvent(e);
+		if (!e.defaultPrevented) throw err;
+	}
+	return promise.then((res) => {
+		for (const item of res || []) {
+			if (item.status !== "rejected") continue;
+			handlePreloadError(item.reason);
+		}
+		return baseModule().catch(handlePreloadError);
+	});
+};
+// node_modules/@capacitor/app/dist/esm/index.js
+var App$1 = registerPlugin("App", { web: () => __vitePreload(() => import("./web-D88DCsBP.js").then((m) => new m.AppWeb()), []) });
+// node_modules/@supabase/supabase-js/dist/tracingRegistry.mjs
 var EXTRACTOR_KEY = Symbol.for("@supabase/supabase-js.traceContextExtractor");
 /**
 * The currently registered trace context extractor, if any.
@@ -35149,15 +35795,23 @@ var isPlaceholder = (val) => !val || val.includes("YOUR_PROJECT_ID") || val.incl
 var isSupabaseConfigured = !isPlaceholder(SUPABASE_URL) && !isPlaceholder(SUPABASE_ANON_KEY);
 var isDemoMode = !isSupabaseConfigured;
 async function fetchWithTimeout(input, init) {
+	const timeoutMs = (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url).includes("/functions/v1/") ? 6e4 : 3e4;
 	const controller = new AbortController();
-	const timeoutId = window.setTimeout(() => controller.abort(), 3e4);
+	const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+	const callerSignal = init?.signal;
+	const onCallerAbort = () => controller.abort();
+	if (callerSignal) {
+		if (callerSignal.aborted) controller.abort();
+		else callerSignal.addEventListener("abort", onCallerAbort, { once: true });
+	}
 	try {
 		return await fetch(input, {
 			...init,
-			signal: init?.signal ?? controller.signal
+			signal: controller.signal
 		});
 	} finally {
 		window.clearTimeout(timeoutId);
+		if (callerSignal) callerSignal.removeEventListener("abort", onCallerAbort);
 	}
 }
 var supabase = isSupabaseConfigured ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -35221,6 +35875,78 @@ async function withSessionRetry(operation) {
 			throw retryErr;
 		}
 	}
+}
+var ADMIN_PASSWORD_STORAGE_KEY = "bosla_admin_password";
+var adminPasswordMemory = null;
+function setStoredAdminPassword(password) {
+	adminPasswordMemory = password;
+	try {
+		localStorage.setItem(ADMIN_PASSWORD_STORAGE_KEY, password);
+	} catch {}
+}
+function getStoredAdminPassword() {
+	if (adminPasswordMemory) return adminPasswordMemory;
+	try {
+		const stored = localStorage.getItem(ADMIN_PASSWORD_STORAGE_KEY);
+		if (stored) {
+			adminPasswordMemory = stored;
+			return stored;
+		}
+	} catch {}
+	return null;
+}
+function clearStoredAdminPassword() {
+	adminPasswordMemory = null;
+	try {
+		localStorage.removeItem(ADMIN_PASSWORD_STORAGE_KEY);
+	} catch {}
+}
+function getAuthRedirectUrl(path) {
+	if (Capacitor.isNativePlatform()) return `boslaapp://${path}`;
+	return `${window.location.origin}/${path}`;
+}
+async function invokeAdminData(action, payload = {}) {
+	if (!supabase) throw new Error("لم يتم تهيئة الاتصال بالخادم");
+	const adminPassword = getStoredAdminPassword();
+	if (!adminPassword) throw new Error("انتهت جلسة الإدارة — سجّل دخول الإدارة من جديد");
+	const { data, error } = await supabase.functions.invoke("admin-data", { body: {
+		action,
+		admin_password: adminPassword,
+		...payload
+	} });
+	if (error) {
+		const context = error?.context;
+		const status = context?.status;
+		let serverErrMsg = "";
+		if (context && typeof context.json === "function") try {
+			const bodyJson = await (typeof context.clone === "function" ? context.clone() : context).json();
+			if (typeof bodyJson?.error === "string" && bodyJson.error.trim()) serverErrMsg = bodyJson.error.trim();
+			else if (typeof bodyJson?.message === "string" && bodyJson.message.trim()) serverErrMsg = bodyJson.message.trim();
+		} catch {}
+		const msg = `${serverErrMsg} ${error.message || ""}`.toLowerCase();
+		if (status === 401 || status === 403 || msg.includes("unauthorized") || msg.includes("password")) throw new Error("كلمة سر الإدارة غير صالحة — سجّل دخول الإدارة من جديد");
+		if (serverErrMsg) throw new Error(serverErrMsg);
+		throw new Error("تعذّر تنفيذ طلب الإدارة — تحقق من الاتصال وحاول مجدداً");
+	}
+	if (data && typeof data === "object") {
+		const obj = data;
+		if (obj.error) {
+			const errVal = String(obj.error);
+			if (errVal.toLowerCase().includes("unauthorized") || errVal.toLowerCase().includes("password")) throw new Error("كلمة سر الإدارة غير صالحة — سجّل دخول الإدارة من جديد");
+			throw new Error(errVal);
+		}
+		if (obj.ok === false) throw new Error(typeof obj.message === "string" && obj.message.trim() ? obj.message.trim() : "تعذّر تنفيذ طلب الإدارة");
+	}
+	return data;
+}
+function extractRows(res, keys) {
+	if (Array.isArray(res)) return res;
+	if (res && typeof res === "object") {
+		const obj = res;
+		for (const key of keys) if (Array.isArray(obj[key])) return obj[key];
+		if (Array.isArray(obj.data)) return obj.data;
+	}
+	return [];
 }
 var DEMO_STORAGE_KEY = "bosla_demo_store_v1";
 var DEFAULT_SETTINGS$1 = {
@@ -35444,7 +36170,7 @@ function inferTransactionType(rawType, rawReason, amount) {
 	const reason = typeof rawReason === "string" ? rawReason : "";
 	if (reason === "welcome gift") return "gift";
 	if (reason === "build" && amount < 0) return "build_debit";
-	if (reason === "build failed refund") return "refund";
+	if (reason === "build refund" || reason === "build failed refund") return "refund";
 	if (reason === "manual credit by admin" || reason === "test build credit") return "admin_credit";
 	if (amount > 0) return "topup";
 	if (amount < 0) return "build_debit";
@@ -35654,7 +36380,7 @@ var backend = {
 			email: cleanEmail,
 			password: params.password,
 			options: {
-				emailRedirectTo: `${window.location.origin}/verified`,
+				emailRedirectTo: getAuthRedirectUrl("verified"),
 				data: {
 					full_name: cleanName,
 					username: cleanUsername
@@ -35690,7 +36416,7 @@ var backend = {
 		const { error } = await supabase.auth.resend({
 			type: "signup",
 			email: cleanEmail,
-			options: { emailRedirectTo: `${window.location.origin}/verified` }
+			options: { emailRedirectTo: getAuthRedirectUrl("verified") }
 		});
 		if (error) return {
 			ok: false,
@@ -35731,7 +36457,7 @@ var backend = {
 				message: "تم إرسال رابط استعادة كلمة المرور (في وضع العرض يمكنك التوجه لصفحة إعادة التعيين مباشرة)"
 			};
 		}
-		const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, { redirectTo: `${window.location.origin}/reset-password` });
+		const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, { redirectTo: getAuthRedirectUrl("reset-password") });
 		if (error) return {
 			ok: false,
 			message: "تعذّر إرسال رابط الاستعادة — تأكد من البريد وحاول مجدداً"
@@ -35806,6 +36532,8 @@ var backend = {
 				const amount = Number(row.amount) || 0;
 				const balanceAfter = runningBalance;
 				runningBalance -= amount;
+				const rawDescription = String(row.reason ?? row.admin_note ?? "");
+				const description = row.reason === "build refund" ? "استرداد — فشل بناء التطبيق" : rawDescription;
 				return {
 					id: String(row.id),
 					user_id: userData.user.id,
@@ -35813,7 +36541,7 @@ var backend = {
 					type: inferTransactionType(row.type, row.reason, amount),
 					amount,
 					balance_after: balanceAfter,
-					description: String(row.reason ?? row.admin_note ?? ""),
+					description,
 					created_at: String(row.created_at)
 				};
 			});
@@ -35934,25 +36662,64 @@ var backend = {
 			ok: false,
 			message: "التحليل الذكي غير مفعّل بعد"
 		};
-		const settings = await this.getSettings();
+		const settingsPromise = Promise.race([this.getSettings(), new Promise((resolve) => window.setTimeout(() => resolve({ ...DEFAULT_SETTINGS$1 }), 2500))]);
 		const attachedImages = params.images ?? images ?? [];
 		try {
-			const res = await withSessionRetry(async () => {
-				const { data, error } = await supabase.functions.invoke("chat", { body: {
-					message: params.message,
-					history: params.history.slice(-6),
-					images: attachedImages
-				} });
-				if (error) throw error;
-				return data;
+			const rawRes = await withSessionRetry(async () => {
+				let timeoutId;
+				try {
+					const invokePromise = supabase.functions.invoke("chat", {
+						body: {
+							message: params.message,
+							history: params.history.slice(-6),
+							images: attachedImages
+						},
+						timeout: 55e3
+					});
+					const guardPromise = new Promise((_, reject) => {
+						timeoutId = window.setTimeout(() => reject(/* @__PURE__ */ new Error("chat_invoke_timeout")), 58e3);
+					});
+					const { data, error } = await Promise.race([invokePromise, guardPromise]);
+					if (error) {
+						if ((error?.context)?.status === 401) throw Object.assign(/* @__PURE__ */ new Error("Unauthorized"), { status: 401 });
+						throw error;
+					}
+					return data;
+				} finally {
+					if (timeoutId !== void 0) window.clearTimeout(timeoutId);
+				}
 			});
+			const settings = await settingsPromise;
+			let parsedRes = rawRes;
+			if (typeof parsedRes === "string") try {
+				parsedRes = JSON.parse(parsedRes);
+			} catch {
+				return {
+					ok: false,
+					message: "استجابة غير متوقعة من الخادم — حاول لاحقاً"
+				};
+			}
+			if (!parsedRes || typeof parsedRes !== "object") return {
+				ok: false,
+				message: "تعذّر استلام رد من الذكاء الاصطناعي — حاول لاحقاً"
+			};
+			const res = parsedRes;
+			if (res.error) return {
+				ok: false,
+				message: "تعذّر الوصول للذكاء الاصطناعي — حاول لاحقاً"
+			};
+			const replyText = typeof res.reply === "string" ? res.reply.trim() : "";
+			if (!replyText) return {
+				ok: false,
+				message: "تعذّر استلام نص الرد من الذكاء الاصطناعي — حاول لاحقاً"
+			};
 			if (res.estimate && res.estimate.complexity) {
 				const complexity = res.estimate.complexity;
 				const points = res.estimate.points ?? COMPLEXITY_POINTS[complexity];
 				const priceSdg = res.estimate.price_sdg ?? points * settings.point_price_sdg;
 				return {
 					ok: true,
-					reply: res.reply,
+					reply: replyText,
 					estimate: {
 						complexity,
 						complexityLabel: COMPLEXITY_LABELS[complexity],
@@ -35965,14 +36732,14 @@ var backend = {
 			}
 			if (res.estimate === null) return {
 				ok: true,
-				reply: res.reply
+				reply: replyText
 			};
 			if (res.action === "estimate" && res.complexity) {
 				const points = res.points ?? COMPLEXITY_POINTS[res.complexity];
 				const priceSdg = res.price_sdg ?? points * settings.point_price_sdg;
 				return {
 					ok: true,
-					reply: res.reply,
+					reply: replyText,
 					estimate: {
 						complexity: res.complexity,
 						complexityLabel: COMPLEXITY_LABELS[res.complexity],
@@ -35985,12 +36752,16 @@ var backend = {
 			}
 			return {
 				ok: true,
-				reply: res.reply
+				reply: replyText
 			};
 		} catch (err) {
 			if (err instanceof Error && err.message.includes("انتهت جلستك")) return {
 				ok: false,
 				message: err.message
+			};
+			if (err instanceof Error && err.message === "chat_invoke_timeout") return {
+				ok: false,
+				message: "استغرق الاتصال بالذكاء الاصطناعي وقتاً طويلاً — حاول لاحقاً"
 			};
 			return {
 				ok: false,
@@ -36039,7 +36810,10 @@ var backend = {
 		const passHash = await sha256Hex(password);
 		if (!supabase) {
 			const store = readDemoStore();
-			if (cleanUser === store.adminCredentials.username && passHash === store.adminCredentials.passwordHash) return { ok: true };
+			if (cleanUser === store.adminCredentials.username && passHash === store.adminCredentials.passwordHash) {
+				setStoredAdminPassword(password);
+				return { ok: true };
+			}
 			return {
 				ok: false,
 				message: "بيانات الدخول غير صحيحة"
@@ -36052,11 +36826,17 @@ var backend = {
 		};
 		const expectedUser = (data.admin_username || DEFAULT_ADMIN_USERNAME).trim();
 		const expectedHash = data.admin_password_hash || DEFAULT_ADMIN_PASSWORD_HASH;
-		if (cleanUser === expectedUser && passHash === expectedHash) return { ok: true };
+		if (cleanUser === expectedUser && passHash === expectedHash) {
+			setStoredAdminPassword(password);
+			return { ok: true };
+		}
 		return {
 			ok: false,
 			message: "بيانات الدخول غير صحيحة"
 		};
+	},
+	adminLogout() {
+		clearStoredAdminPassword();
 	},
 	async adminChangePassword(params) {
 		if (params.newPassword.length < 6) return {
@@ -36091,15 +36871,19 @@ var backend = {
 			old_hash: currentHash,
 			new_hash: nextHash
 		});
-		if (!rpcErr && rpcOk === true) return {
-			ok: true,
-			message: "تم تغيير كلمة سر الإدارة بنجاح"
-		};
+		if (!rpcErr && rpcOk === true) {
+			setStoredAdminPassword(params.newPassword);
+			return {
+				ok: true,
+				message: "تم تغيير كلمة سر الإدارة بنجاح"
+			};
+		}
 		const { error: updateErr } = await supabase.from("settings").update({ admin_password_hash: nextHash }).eq("id", 1);
 		if (updateErr) return {
 			ok: false,
 			message: "تعذّر تحديث كلمة سر الإدارة"
 		};
+		setStoredAdminPassword(params.newPassword);
 		return {
 			ok: true,
 			message: "تم تغيير كلمة سر الإدارة بنجاح"
@@ -36108,16 +36892,25 @@ var backend = {
 	async adminSearchWallets(query) {
 		const q = query.trim().toLowerCase();
 		if (!supabase) return readDemoStore().accounts.filter((a) => a.wallet_number).filter((a) => !q || a.wallet_number.toLowerCase().includes(q) || a.full_name.toLowerCase().includes(q) || (a.phone || "").toLowerCase().includes(q) || a.email.toLowerCase().includes(q)).map(toUserProfile);
-		return withSessionRetry(async () => {
-			let req = supabase.from("profiles").select("*").order("created_at", { ascending: false }).limit(50);
-			if (q) req = req.or(`wallet_number.ilike.%${q}%,full_name.ilike.%${q}%,phone.ilike.%${q}%,email.ilike.%${q}%`);
-			const { data, error } = await req;
-			if (error) {
-				if (isUnauthorizedError(error)) throw error;
-				throw new Error("تعذّر البحث في المحافظ");
-			}
-			return data || [];
-		});
+		return extractRows(await invokeAdminData("list_users", {
+			search: query.trim(),
+			query: query.trim()
+		}), [
+			"users",
+			"profiles",
+			"wallets"
+		]).map((row) => ({
+			id: String(row.profile_id ?? row.id ?? row.user_id ?? row.email ?? ""),
+			full_name: String(row.display_name ?? row.full_name ?? "—"),
+			username: String(row.username ?? ""),
+			email: String(row.email ?? ""),
+			phone: row.phone ? String(row.phone) : void 0,
+			wallet_number: row.wallet_number ? String(row.wallet_number) : "—",
+			points_balance: Number(row.points_balance ?? 0) || 0,
+			email_verified: Boolean(row.email_verified ?? row.email_confirmed_at ?? true),
+			is_admin: Boolean(row.is_admin ?? false),
+			created_at: String(row.created_at ?? "")
+		}));
 	},
 	async adminAdjustPoints(params) {
 		if (!params.delta || Number.isNaN(params.delta)) return {
@@ -36155,38 +36948,46 @@ var backend = {
 				message: "تم تحديث رصيد المحفظة بنجاح"
 			};
 		}
-		return withSessionRetry(async () => {
-			const rpcName = params.delta > 0 ? "credit_points" : "debit_points";
-			const { data, error } = await supabase.rpc(rpcName, {
-				target_user_id: params.userId,
-				points_amount: Math.abs(params.delta),
-				tx_type: params.delta > 0 ? "admin_credit" : "admin_debit",
-				tx_description: params.reason.trim() || (params.delta > 0 ? "شحن إداري" : "خصم إداري")
+		try {
+			const reasonText = params.reason.trim() || (params.delta > 0 ? "شحن إداري" : "خصم إداري");
+			const res = await invokeAdminData("adjust_points", {
+				...params.userId.startsWith("BOS-") ? { wallet_number: params.userId } : { profile_id: params.userId },
+				delta: params.delta,
+				reason: reasonText
 			});
-			if (error) {
-				if (isUnauthorizedError(error)) throw error;
-				return {
-					ok: false,
-					message: error.message || "تعذّر تعديل النقاط"
-				};
-			}
+			const rawBalance = res?.new_balance ?? res?.newBalance ?? res?.balance ?? res?.points_balance;
+			const newBalance = rawBalance !== void 0 && rawBalance !== null ? Number(rawBalance) : void 0;
 			return {
 				ok: true,
-				newBalance: Number(data),
+				newBalance: newBalance !== void 0 && !Number.isNaN(newBalance) ? newBalance : void 0,
 				message: "تم تحديث الرصيد بنجاح"
 			};
-		});
+		} catch (err) {
+			return {
+				ok: false,
+				message: err instanceof Error ? err.message : "تعذّر تعديل النقاط"
+			};
+		}
 	},
 	async adminListTopupRequests() {
 		if (!supabase) return readDemoStore().topupRequests;
-		return withSessionRetry(async () => {
-			const { data, error } = await supabase.from("topup_requests").select("*").order("created_at", { ascending: false });
-			if (error) {
-				if (isUnauthorizedError(error)) throw error;
-				throw new Error("تعذّر تحميل طلبات الشحن");
-			}
-			return data || [];
-		});
+		return extractRows(await invokeAdminData("list_topups"), [
+			"topups",
+			"topup_requests",
+			"requests"
+		]).map((row) => ({
+			id: String(row.id ?? ""),
+			user_id: String(row.user_id ?? row.profile_id ?? ""),
+			wallet_number: String(row.wallet_number ?? ""),
+			user_name: String(row.user_name ?? row.display_name ?? row.full_name ?? "—"),
+			method: row.method || "bankak",
+			points: Number(row.points ?? 0) || 0,
+			price_sdg: Number(row.price_sdg ?? 0) || 0,
+			status: row.status || "pending",
+			admin_note: row.admin_note ? String(row.admin_note) : void 0,
+			created_at: String(row.created_at ?? ""),
+			reviewed_at: row.reviewed_at ? String(row.reviewed_at) : void 0
+		}));
 	},
 	async adminReviewTopup(params) {
 		if (!supabase) {
@@ -36226,70 +37027,44 @@ var backend = {
 				message: params.approve ? "تمت الموافقة وشحن النقاط بنجاح" : "تم رفض الطلب"
 			};
 		}
-		return withSessionRetry(async () => {
-			const { error } = await supabase.rpc("approve_topup_request", {
+		try {
+			const res = await invokeAdminData("approve_topup", {
 				req_id: params.requestId,
-				is_approved: params.approve,
-				note_text: params.note?.trim() || null
+				approve: params.approve,
+				note: params.note?.trim() || null
 			});
-			if (error) {
-				if (isUnauthorizedError(error)) throw error;
-				return {
-					ok: false,
-					message: error.message || "تعذّر معالجة الطلب"
-				};
-			}
+			if (res && res.ok === false) return {
+				ok: false,
+				message: typeof res.message === "string" && res.message.trim() ? res.message.trim() : "تعذّر اعتماد الطلب وشحن النقاط — لم يتم تغيير الرصيد"
+			};
 			return {
 				ok: true,
 				message: params.approve ? "تمت الموافقة وشحن النقاط بنجاح" : "تم رفض الطلب"
 			};
-		});
+		} catch (err) {
+			return {
+				ok: false,
+				message: err instanceof Error && err.message.trim() ? err.message : "تعذّر معالجة الطلب وشحن النقاط — لم يتم تغيير الرصيد"
+			};
+		}
 	},
 	async adminListAllTransactions() {
 		if (!supabase) return readDemoStore().transactions;
-		return withSessionRetry(async () => {
-			const { data, error } = await supabase.from("points_transactions").select("id, wallet_number, amount, type, reason, admin_note, created_at").order("created_at", { ascending: false }).limit(100);
-			if (error) {
-				if (isUnauthorizedError(error)) throw error;
-				throw new Error("تعذّر تحميل سجل المعاملات");
-			}
-			const rows = data || [];
-			const walletNumbers = Array.from(new Set(rows.map((r) => r.wallet_number).filter((w) => typeof w === "string" && w.length > 0)));
-			const profileByWallet = /* @__PURE__ */ new Map();
-			if (walletNumbers.length > 0) {
-				const { data: profilesData, error: profErr } = await supabase.from("profiles").select("id, wallet_number, full_name, points_balance").in("wallet_number", walletNumbers);
-				if (profErr) {
-					if (isUnauthorizedError(profErr)) throw profErr;
-					throw new Error("تعذّر تحميل سجل المعاملات");
-				}
-				for (const p of profilesData || []) {
-					const w = typeof p.wallet_number === "string" ? p.wallet_number : "";
-					if (!w) continue;
-					profileByWallet.set(w, {
-						user_id: String(p.id ?? ""),
-						user_name: String(p.full_name ?? ""),
-						runningBalance: Number(p.points_balance) || 0
-					});
-				}
-			}
-			return rows.map((row) => {
-				const walletNumber = typeof row.wallet_number === "string" ? row.wallet_number : "";
-				const amount = Number(row.amount) || 0;
-				const prof = profileByWallet.get(walletNumber);
-				const balanceAfter = prof ? prof.runningBalance : 0;
-				if (prof) prof.runningBalance -= amount;
-				return {
-					id: String(row.id),
-					user_id: prof?.user_id ?? "",
-					wallet_number: walletNumber || void 0,
-					user_name: prof?.user_name || void 0,
-					type: inferTransactionType(row.type, row.reason, amount),
-					amount,
-					balance_after: balanceAfter,
-					description: String(row.reason ?? row.admin_note ?? ""),
-					created_at: String(row.created_at)
-				};
-			});
+		return extractRows(await invokeAdminData("list_transactions"), ["transactions", "points_transactions"]).map((row) => {
+			const amount = Number(row.amount ?? 0) || 0;
+			const rawDesc = String(row.description ?? row.reason ?? row.admin_note ?? "");
+			const description = row.reason === "build refund" || rawDesc === "build refund" ? "استرداد — فشل بناء التطبيق" : rawDesc;
+			return {
+				id: String(row.id ?? ""),
+				user_id: String(row.user_id ?? row.profile_id ?? ""),
+				wallet_number: row.wallet_number ? String(row.wallet_number) : void 0,
+				user_name: row.user_name ? String(row.user_name) : void 0,
+				type: inferTransactionType(row.type, row.reason ?? row.description, amount),
+				amount,
+				balance_after: Number(row.balance_after ?? 0) || 0,
+				description,
+				created_at: String(row.created_at ?? "")
+			};
 		});
 	},
 	async adminUpdateSettings(next) {
@@ -36319,8 +37094,40 @@ var backend = {
 				message: "تم حفظ الإعدادات بنجاح"
 			};
 		});
+	},
+	async registerDeviceToken(params) {
+		const cleanToken = params.fcmToken.trim();
+		if (!cleanToken) return { ok: false };
+		if (!supabase) return { ok: true };
+		try {
+			return await withSessionRetry(async () => {
+				const { data: userData } = await supabase.auth.getUser();
+				if (!userData.user) return { ok: false };
+				const { data: profile, error: profErr } = await supabase.from("profiles").select("wallet_number").eq("id", userData.user.id).single();
+				if (profErr) {
+					if (isUnauthorizedError(profErr)) throw profErr;
+					return { ok: false };
+				}
+				const walletNumber = profile?.wallet_number;
+				if (!walletNumber) return { ok: false };
+				const { error } = await supabase.from("device_tokens").upsert({
+					wallet_number: walletNumber,
+					fcm_token: cleanToken,
+					platform: params.platform
+				}, { onConflict: "fcm_token" });
+				if (error) {
+					if (isUnauthorizedError(error)) throw error;
+					return { ok: false };
+				}
+				return { ok: true };
+			});
+		} catch {
+			return { ok: false };
+		}
 	}
 };
+// node_modules/@capacitor/push-notifications/dist/esm/index.js
+var PushNotifications = registerPlugin("PushNotifications", {});
 // node_modules/@firebase/util/dist/postinstall.mjs
 /**
 * @license
@@ -38985,14 +39792,14 @@ function generateFid() {
 		const fidByteArray = /* @__PURE__ */ new Uint8Array(17);
 		(self.crypto || self.msCrypto).getRandomValues(fidByteArray);
 		fidByteArray[0] = 112 + fidByteArray[0] % 16;
-		const fid = encode$1(fidByteArray);
+		const fid = encode(fidByteArray);
 		return VALID_FID_PATTERN.test(fid) ? fid : INVALID_FID;
 	} catch {
 		return INVALID_FID;
 	}
 }
 /** Converts a FID Uint8Array to a base64 string representation. */
-function encode$1(fidByteArray) {
+function encode(fidByteArray) {
 	return bufferToBase64UrlSafe(fidByteArray).substr(0, 22);
 }
 /**
@@ -41839,8 +42646,12 @@ var isFirebaseConfigured = Boolean(firebaseConfig.apiKey && firebaseConfig.proje
 var appInstance = null;
 var analyticsInstance = null;
 var messagingInstance = null;
+function getCurrentPushPlatform() {
+	if (!Capacitor.isNativePlatform()) return "web";
+	return Capacitor.getPlatform() === "ios" ? "ios" : "android";
+}
 async function initFirebaseServices() {
-	if (!isFirebaseConfigured) return;
+	if (Capacitor.isNativePlatform() || !isFirebaseConfigured) return;
 	try {
 		if (!getApps().length) appInstance = initializeApp(firebaseConfig);
 		else appInstance = getApps()[0];
@@ -41854,37 +42665,147 @@ function trackAppEvent(eventName, params) {
 		logEvent(analyticsInstance, eventName, params);
 	} catch {}
 }
+async function getNotificationPermissionStatus() {
+	if (Capacitor.isNativePlatform()) try {
+		const status = await PushNotifications.checkPermissions();
+		if (status.receive === "granted") return "granted";
+		if (status.receive === "denied") return "denied";
+		return "prompt";
+	} catch {
+		return "unsupported";
+	}
+	if (typeof window === "undefined" || !("Notification" in window)) return "unsupported";
+	if (Notification.permission === "granted") return "granted";
+	if (Notification.permission === "denied") return "denied";
+	return "prompt";
+}
+async function getNativeFcmToken() {
+	return new Promise((resolve) => {
+		let settled = false;
+		let regHandle = null;
+		let errHandle = null;
+		let timeoutId;
+		const finish = (token) => {
+			if (settled) return;
+			settled = true;
+			if (timeoutId !== void 0) window.clearTimeout(timeoutId);
+			regHandle?.remove().catch(() => void 0);
+			errHandle?.remove().catch(() => void 0);
+			resolve(token);
+		};
+		timeoutId = window.setTimeout(() => finish(void 0), 1e4);
+		(async () => {
+			try {
+				regHandle = await PushNotifications.addListener("registration", (token) => {
+					finish(token?.value?.trim() || void 0);
+				});
+				errHandle = await PushNotifications.addListener("registrationError", () => {
+					finish(void 0);
+				});
+				await PushNotifications.register();
+			} catch {
+				finish(void 0);
+			}
+		})();
+	});
+}
 async function requestPushPermission() {
-	if (typeof window === "undefined" || !("Notification" in window)) return {
-		supported: false,
-		granted: false,
-		reason: "المتصفح لا يدعم الإشعارات"
-	};
-	try {
-		if (await Notification.requestPermission() !== "granted") return {
+	const platform = getCurrentPushPlatform();
+	if (Capacitor.isNativePlatform()) try {
+		let perm = await PushNotifications.checkPermissions();
+		if (perm.receive !== "granted") perm = await PushNotifications.requestPermissions();
+		if (perm.receive !== "granted") return {
 			supported: true,
 			granted: false,
+			status: perm.receive === "denied" ? "denied" : "prompt",
+			platform,
 			reason: "لم يتم منح إذن الإشعارات"
-		};
-		if (isFirebaseConfigured && !messagingInstance) await initFirebaseServices();
-		if (messagingInstance && "BBCCdQMW6BoJYs-nTTBlIKTIIXbGwjPZQGgio1M_Moz_bh47rQ-U14yQcaueM1yvkHjtJtrlpg267ruD1uN69sQ") return {
-			supported: true,
-			granted: true,
-			token: await getToken(messagingInstance, { vapidKey: "BBCCdQMW6BoJYs-nTTBlIKTIIXbGwjPZQGgio1M_Moz_bh47rQ-U14yQcaueM1yvkHjtJtrlpg267ruD1uN69sQ" })
 		};
 		return {
 			supported: true,
-			granted: true
+			granted: true,
+			status: "granted",
+			platform,
+			token: await getNativeFcmToken()
 		};
 	} catch {
 		return {
 			supported: true,
 			granted: false,
+			status: "prompt",
+			platform,
+			reason: "تعذّر تفعيل الإشعارات حالياً"
+		};
+	}
+	if (typeof window === "undefined" || !("Notification" in window)) return {
+		supported: false,
+		granted: false,
+		status: "unsupported",
+		platform,
+		reason: "المتصفح لا يدعم الإشعارات"
+	};
+	try {
+		const permission = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+		if (permission !== "granted") return {
+			supported: true,
+			granted: false,
+			status: permission === "denied" ? "denied" : "prompt",
+			platform,
+			reason: "لم يتم منح إذن الإشعارات"
+		};
+		if (isFirebaseConfigured && !messagingInstance) await initFirebaseServices();
+		const vapidKey = "BBCCdQMW6BoJYs-nTTBlIKTIIXbGwjPZQGgio1M_Moz_bh47rQ-U14yQcaueM1yvkHjtJtrlpg267ruD1uN69sQ".trim();
+		if (messagingInstance && vapidKey) {
+			let serviceWorkerRegistration;
+			if ("serviceWorker" in navigator) try {
+				serviceWorkerRegistration = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
+			} catch {}
+			return {
+				supported: true,
+				granted: true,
+				status: "granted",
+				platform,
+				token: (await getToken(messagingInstance, {
+					vapidKey,
+					...serviceWorkerRegistration ? { serviceWorkerRegistration } : {}
+				}))?.trim() || void 0
+			};
+		}
+		return {
+			supported: true,
+			granted: true,
+			status: "granted",
+			platform
+		};
+	} catch {
+		return {
+			supported: true,
+			granted: false,
+			status: Notification.permission === "denied" ? "denied" : "prompt",
+			platform,
 			reason: "تعذّر تفعيل الإشعارات حالياً"
 		};
 	}
 }
 function subscribeForegroundNotifications(onNotify) {
+	if (Capacitor.isNativePlatform()) {
+		let active = true;
+		let nativeHandle = null;
+		PushNotifications.addListener("pushNotificationReceived", (notification) => {
+			if (!active) return;
+			onNotify({
+				title: notification.title || "بوصلة التطبيقات",
+				body: notification.body || ""
+			});
+		}).then((handle) => {
+			if (!active) handle.remove().catch(() => void 0);
+			else nativeHandle = handle;
+		}).catch(() => void 0);
+		return () => {
+			active = false;
+			nativeHandle?.remove().catch(() => void 0);
+		};
+	}
 	if (!messagingInstance) return () => {};
 	try {
 		return onMessage(messagingInstance, (payload) => {
@@ -51597,6 +52518,30 @@ var AtSign = createLucideIcon("at-sign", [["circle", {
 * This source code is licensed under the ISC license.
 * See the LICENSE file in the root directory of this source tree.
 */
+var BellOff = createLucideIcon("bell-off", [
+	["path", {
+		d: "M10.268 21a2 2 0 0 0 3.464 0",
+		key: "vwvbt9"
+	}],
+	["path", {
+		d: "M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742",
+		key: "178tsu"
+	}],
+	["path", {
+		d: "m2 2 20 20",
+		key: "1ooewy"
+	}],
+	["path", {
+		d: "M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05",
+		key: "1hqiys"
+	}]
+]);
+/**
+* @license lucide-react v0.546.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
 var Bell = createLucideIcon("bell", [["path", {
 	d: "M10.268 21a2 2 0 0 0 3.464 0",
 	key: "vwvbt9"
@@ -52010,29 +52955,6 @@ var Landmark = createLucideIcon("landmark", [
 * This source code is licensed under the ISC license.
 * See the LICENSE file in the root directory of this source tree.
 */
-var Link2 = createLucideIcon("link-2", [
-	["path", {
-		d: "M9 17H7A5 5 0 0 1 7 7h2",
-		key: "8i5ue5"
-	}],
-	["path", {
-		d: "M15 7h2a5 5 0 1 1 0 10h-2",
-		key: "1b9ql8"
-	}],
-	["line", {
-		x1: "8",
-		x2: "16",
-		y1: "12",
-		y2: "12",
-		key: "1jonct"
-	}]
-]);
-/**
-* @license lucide-react v0.546.0 - ISC
-*
-* This source code is licensed under the ISC license.
-* See the LICENSE file in the root directory of this source tree.
-*/
 var LoaderCircle = createLucideIcon("loader-circle", [["path", {
 	d: "M21 12a9 9 0 1 1-6.219-8.56",
 	key: "13zald"
@@ -52417,11 +53339,16 @@ var NAV_ITEMS = [
 ];
 function MobileShell({ children, showBottomNav = true, bgTone = "canvas" }) {
 	const { toast } = useApp();
+	const isNative = Capacitor.isNativePlatform();
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-		className: "min-h-dvh w-full bg-[#E6ECF5] flex justify-center items-stretch sm:py-4 sm:px-4",
+		className: "h-[100dvh] w-full bg-[#E6ECF5] flex justify-center items-stretch sm:items-center sm:py-4 sm:px-4 overflow-hidden",
 		children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-			className: `relative w-full max-w-[430px] min-h-dvh sm:min-h-[calc(100dvh-2rem)] sm:max-h-[900px] sm:rounded-[34px] sm:shadow-[0_24px_70px_-15px_rgba(16,29,53,0.28)] sm:border sm:border-slate-300/80 overflow-hidden flex flex-col ${bgTone === "navy" ? "bg-[#101D35] text-white" : "bg-[#F5F7FB] text-[#101D35]"}`,
+			className: `relative w-full max-w-[430px] h-[100dvh] sm:h-[calc(100dvh-2rem)] sm:max-h-[900px] sm:rounded-[34px] sm:shadow-[0_24px_70px_-15px_rgba(16,29,53,0.28)] sm:border sm:border-slate-300/80 overflow-hidden flex flex-col ${bgTone === "navy" ? "bg-[#101D35] text-white" : "bg-[#F5F7FB] text-[#101D35]"}`,
 			children: [
+				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+					"aria-hidden": "true",
+					className: `shrink-0 bg-[#101D35] ${isNative ? "pt-[max(env(safe-area-inset-top),28px)]" : "pt-[max(env(safe-area-inset-top),24px)] sm:pt-0"}`
+				}),
 				backend.isDemoMode && bgTone === "canvas" && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 					className: "bg-[#FFF9EB] border-b border-[#D5B45C]/40 px-3 py-1.5 text-[11px] font-medium text-[#7B5D12] flex items-center justify-center gap-1.5 text-center shrink-0",
 					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Info, { className: "w-3.5 h-3.5 shrink-0 text-[#B8922E]" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "وضع العرض — اربط Supabase من الإعدادات لتفعيل البيانات الحقيقية" })]
@@ -52440,7 +53367,7 @@ function MobileShell({ children, showBottomNav = true, bgTone = "canvas" }) {
 						y: -16
 					},
 					transition: { duration: .2 },
-					className: "absolute top-3 left-3 right-3 z-50 pointer-events-none flex justify-center",
+					className: `absolute left-3 right-3 z-50 pointer-events-none flex justify-center ${isNative ? "top-[calc(max(env(safe-area-inset-top),28px)+0.5rem)]" : "top-[calc(max(env(safe-area-inset-top),24px)+0.5rem)] sm:top-3"}`,
 					children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 						className: `pointer-events-auto flex items-center gap-2 px-4 py-2.5 rounded-2xl shadow-lg text-xs font-semibold border max-w-full ${toast.tone === "error" ? "bg-red-50 text-red-900 border-red-200" : toast.tone === "success" ? "bg-emerald-50 text-emerald-900 border-emerald-200" : "bg-[#101D35] text-white border-[#101D35]"}`,
 						children: [toast.tone === "error" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CircleAlert, { className: "w-4 h-4 shrink-0 text-red-600" }) : toast.tone === "success" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CircleCheck, { className: "w-4 h-4 shrink-0 text-emerald-600" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Info, { className: "w-4 h-4 shrink-0 text-[#D5B45C]" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
@@ -52449,8 +53376,8 @@ function MobileShell({ children, showBottomNav = true, bgTone = "canvas" }) {
 						})]
 					})
 				}, toast.id) }),
-				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-					className: "flex-1 flex flex-col min-h-0 overflow-hidden",
+				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("main", {
+					className: "flex-1 flex flex-col min-h-0 overflow-y-auto",
 					children
 				}),
 				showBottomNav && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("nav", {
@@ -53056,17 +53983,89 @@ function VerifyEmailScreen() {
 	});
 }
 // src/screens/VerifiedScreen.tsx
+var codeExchangePromises = /* @__PURE__ */ new Map();
 function VerifiedScreen() {
 	const navigate = useNavigate();
+	const [searchParams] = useSearchParams();
 	const { refreshProfile, user } = useApp();
+	const code = searchParams.get("code");
+	const [verifying, setVerifying] = (0, import_react.useState)(Boolean(code && supabase));
+	const [errorMsg, setErrorMsg] = (0, import_react.useState)(null);
 	(0, import_react.useEffect)(() => {
-		refreshProfile();
-	}, [refreshProfile]);
+		let cancelled = false;
+		const run = async () => {
+			if (code && supabase) {
+				setVerifying(true);
+				setErrorMsg(null);
+				let promise = codeExchangePromises.get(code);
+				if (!promise) {
+					promise = supabase.auth.exchangeCodeForSession(code).then(({ error }) => error ? "تعذّر إتمام تفعيل البريد الإلكتروني — قد يكون الرابط منتهي الصلاحية أو مستخدماً من قبل." : null).catch(() => "حدث خطأ أثناء تأكيد التفعيل — تحقق من الاتصال وحاول مجدداً.");
+					codeExchangePromises.set(code, promise);
+				}
+				const err = await promise;
+				if (cancelled) return;
+				setVerifying(false);
+				if (err) {
+					setErrorMsg(err);
+					return;
+				}
+			}
+			await refreshProfile();
+		};
+		run();
+		return () => {
+			cancelled = true;
+		};
+	}, [code, refreshProfile]);
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(MobileShell, {
 		showBottomNav: false,
 		children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 			className: "flex-1 flex flex-col items-center justify-center px-6 text-center bg-white",
-			children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(motion.div, {
+			children: verifying ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+				className: "flex flex-col items-center",
+				children: [
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-10 h-10 text-[#2878E8] animate-spin mb-4" }),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", {
+						className: "text-lg font-extrabold text-[#101D35] mb-1",
+						children: "جاري تأكيد تفعيل حسابك…"
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+						className: "text-xs text-slate-500",
+						children: "يرجى الانتظار لحظة"
+					})
+				]
+			}) : errorMsg ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(motion.div, {
+				initial: {
+					scale: .9,
+					opacity: 0
+				},
+				animate: {
+					scale: 1,
+					opacity: 1
+				},
+				transition: { duration: .3 },
+				className: "flex flex-col items-center",
+				children: [
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+						className: "w-20 h-20 rounded-full bg-red-50 border border-red-200 flex items-center justify-center mb-5",
+						children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CircleAlert, { className: "w-11 h-11 text-red-600" })
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", {
+						className: "text-xl font-extrabold text-[#101D35] mb-2",
+						children: "تعذّر تفعيل الحساب"
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+						className: "text-sm text-slate-600 mb-7 max-w-[290px] leading-relaxed",
+						children: errorMsg
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+						type: "button",
+						onClick: () => navigate("/login", { replace: true }),
+						className: "w-full min-w-[240px] min-h-[48px] rounded-xl bg-[#2878E8] hover:bg-[#1E66CC] text-white font-bold text-sm px-6 active:scale-[0.98] transition-all",
+						children: "الانتقال لتسجيل الدخول"
+					})
+				]
+			}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(motion.div, {
 				initial: {
 					scale: .85,
 					opacity: 0
@@ -53110,14 +54109,41 @@ function VerifiedScreen() {
 	});
 }
 // src/screens/ResetPasswordScreen.tsx
+var resetCodeExchangePromises = /* @__PURE__ */ new Map();
 function ResetPasswordScreen() {
 	const navigate = useNavigate();
+	const [searchParams] = useSearchParams();
 	const { showToast } = useApp();
+	const code = searchParams.get("code");
+	const [exchangingCode, setExchangingCode] = (0, import_react.useState)(Boolean(code && supabase));
+	const [codeError, setCodeError] = (0, import_react.useState)(null);
 	const [password, setPassword] = (0, import_react.useState)("");
 	const [confirmPassword, setConfirmPassword] = (0, import_react.useState)("");
 	const [errors, setErrors] = (0, import_react.useState)({});
 	const [submitting, setSubmitting] = (0, import_react.useState)(false);
 	const [done, setDone] = (0, import_react.useState)(false);
+	(0, import_react.useEffect)(() => {
+		const client = supabase;
+		if (!code || !client) return;
+		let cancelled = false;
+		const run = async () => {
+			setExchangingCode(true);
+			setCodeError(null);
+			let promise = resetCodeExchangePromises.get(code);
+			if (!promise) {
+				promise = client.auth.exchangeCodeForSession(code).then(({ error }) => error ? "تعذّر التحقق من رابط إعادة تعيين كلمة المرور — قد يكون منتهي الصلاحية أو مستخدماً من قبل." : null).catch(() => "حدث خطأ أثناء التحقق من الرابط — تحقق من الاتصال وحاول مجدداً.");
+				resetCodeExchangePromises.set(code, promise);
+			}
+			const err = await promise;
+			if (cancelled) return;
+			setExchangingCode(false);
+			if (err) setCodeError(err);
+		};
+		run();
+		return () => {
+			cancelled = true;
+		};
+	}, [code]);
 	const handleSubmit = async (e) => {
 		e.preventDefault();
 		const nextErr = {};
@@ -53153,7 +54179,42 @@ function ResetPasswordScreen() {
 			})]
 		}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 			className: "flex-1 bg-white rounded-t-[28px] px-5 pt-7 pb-8 text-[#101D35]",
-			children: done ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+			children: exchangingCode ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+				className: "flex flex-col items-center text-center py-12",
+				children: [
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-9 h-9 text-[#2878E8] animate-spin mb-3" }),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", {
+						className: "text-base font-bold mb-1",
+						children: "جاري التحقق من رابط الاستعادة…"
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+						className: "text-xs text-slate-500",
+						children: "يرجى الانتظار لحظة"
+					})
+				]
+			}) : codeError ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+				className: "flex flex-col items-center text-center py-10",
+				children: [
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+						className: "w-16 h-16 rounded-full bg-red-50 flex items-center justify-center mb-4",
+						children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CircleAlert, { className: "w-9 h-9 text-red-600" })
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", {
+						className: "text-lg font-bold mb-2",
+						children: "تعذّر فتح رابط الاستعادة"
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+						className: "text-xs text-slate-600 mb-6 max-w-[280px] leading-relaxed",
+						children: codeError
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+						type: "button",
+						onClick: () => navigate("/login", { replace: true }),
+						className: "w-full min-h-[48px] rounded-xl bg-[#2878E8] hover:bg-[#1E66CC] text-white font-bold text-sm",
+						children: "العودة لتسجيل الدخول"
+					})
+				]
+			}) : done ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 				className: "flex flex-col items-center text-center py-10",
 				children: [
 					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
@@ -53207,6 +54268,55 @@ function ResetPasswordScreen() {
 		})]
 	});
 }
+// src/lib/pushRegistration.ts
+var NOTIF_DENIED_STORAGE_KEY = "bosla-notif-denied";
+function isNotificationDeniedRemembered() {
+	try {
+		return localStorage.getItem(NOTIF_DENIED_STORAGE_KEY) === "1";
+	} catch {
+		return false;
+	}
+}
+function setNotificationDeniedRemembered(denied) {
+	try {
+		if (denied) localStorage.setItem(NOTIF_DENIED_STORAGE_KEY, "1");
+		else localStorage.removeItem(NOTIF_DENIED_STORAGE_KEY);
+	} catch {}
+}
+async function getBuildNotificationStatus() {
+	const status = await getNotificationPermissionStatus();
+	if (status === "granted") {
+		setNotificationDeniedRemembered(false);
+		return {
+			status: "granted",
+			rememberedDenied: false
+		};
+	}
+	return {
+		status,
+		rememberedDenied: status === "denied" || isNotificationDeniedRemembered()
+	};
+}
+async function requestAndRegisterBuildNotifications() {
+	const res = await requestPushPermission();
+	if (res.granted) {
+		setNotificationDeniedRemembered(false);
+		let tokenSaved = false;
+		if (res.token) tokenSaved = (await backend.registerDeviceToken({
+			fcmToken: res.token,
+			platform: res.platform
+		})).ok;
+		return {
+			...res,
+			tokenSaved
+		};
+	}
+	if (res.supported) setNotificationDeniedRemembered(true);
+	return {
+		...res,
+		tokenSaved: false
+	};
+}
 // src/screens/ChatScreen.tsx
 var SUGGESTIONS = [
 	"آلة حاسبة بسيطة بأزرار كبيرة",
@@ -53215,36 +54325,40 @@ var SUGGESTIONS = [
 ];
 var MAX_CHARS = 2e3;
 var MAX_ATTACHED_IMAGES = 5;
-var IMAGE_URL_EXT_REGEX = /\.(png|jpe?g|gif|webp|svg|avif|bmp)$/i;
 var CHAT_STORAGE_KEY = "bosla-chat-messages";
+var PENDING_RETRY_STORAGE_KEY = "bosla-chat-pending-retry";
 function isHttpUrl(raw) {
 	return typeof raw === "string" && /^https?:\/\//i.test(raw.trim());
 }
-function isValidImageUrl(raw) {
-	const trimmed = raw.trim();
-	if (!/^https?:\/\//i.test(trimmed)) return false;
-	try {
-		const parsed = new URL(trimmed);
-		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
-		return IMAGE_URL_EXT_REGEX.test(parsed.pathname);
-	} catch {
-		return false;
-	}
+function createRetryStatusMessage(token) {
+	return {
+		id: `retry_${token}`,
+		role: "bot",
+		text: "الذكاء الاصطناعي مشغول — بحاول تاني…",
+		createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+		isRetryStatus: true
+	};
 }
 function syncMessagesToStorage(msgs, atts) {
 	try {
 		const latestEstId = [...msgs].reverse().find((m) => m.role === "bot" && Boolean(m.estimate))?.id;
-		const persistedReadyImages = atts.filter((a) => a.status === "ready" && isHttpUrl(a.publicUrl)).map((a) => ({
+		const persistedReadyImages = atts ? atts.filter((a) => a.status === "ready" && isHttpUrl(a.publicUrl)).map((a) => ({
 			publicUrl: a.publicUrl,
 			status: "ready"
-		}));
+		})) : null;
 		const serialized = msgs.filter((m) => !m.isRetryStatus).map((m) => {
-			const { attachedImages: _ignored, isRetryStatus: _retry, ...rest } = m;
-			if (m.id === latestEstId && persistedReadyImages.length > 0) return {
+			const { attachedImages, isRetryStatus: _retry, ...rest } = m;
+			if (persistedReadyImages !== null) {
+				if (m.id === latestEstId && persistedReadyImages.length > 0) return {
+					...rest,
+					attachedImages: persistedReadyImages
+				};
+				return rest;
+			}
+			return attachedImages ? {
 				...rest,
-				attachedImages: persistedReadyImages
-			};
-			return rest;
+				attachedImages
+			} : rest;
 		});
 		localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(serialized));
 	} catch {}
@@ -53257,18 +54371,177 @@ function createDefaultMessages() {
 		createdAt: (/* @__PURE__ */ new Date()).toISOString()
 	}];
 }
+function readStoredMessages() {
+	try {
+		const saved = localStorage.getItem(CHAT_STORAGE_KEY);
+		if (saved) {
+			const parsed = JSON.parse(saved);
+			if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+		}
+	} catch {}
+	return createDefaultMessages();
+}
+function readPendingRetry() {
+	try {
+		const raw = localStorage.getItem(PENDING_RETRY_STORAGE_KEY);
+		if (!raw) return null;
+		const parsed = JSON.parse(raw);
+		if (typeof parsed.messageText === "string" && parsed.messageText.trim() && typeof parsed.attempt === "number" && parsed.attempt >= 2 && parsed.attempt <= 3 && typeof parsed.dueAt === "number" && Number.isFinite(parsed.dueAt)) return {
+			userMessageId: typeof parsed.userMessageId === "string" ? parsed.userMessageId : "",
+			messageText: parsed.messageText,
+			attempt: parsed.attempt,
+			dueAt: parsed.dueAt,
+			history: Array.isArray(parsed.history) ? parsed.history : [],
+			images: Array.isArray(parsed.images) ? parsed.images : [],
+			attemptToken: typeof parsed.attemptToken === "number" ? parsed.attemptToken : 0
+		};
+	} catch {}
+	return null;
+}
+function writePendingRetry(pending) {
+	try {
+		if (pending) localStorage.setItem(PENDING_RETRY_STORAGE_KEY, JSON.stringify(pending));
+		else localStorage.removeItem(PENDING_RETRY_STORAGE_KEY);
+	} catch {}
+}
+var activeRetryTimerId = null;
+var activeAttemptToken = 0;
+var activeInFlightUserMsgId = null;
+var chatListeners = /* @__PURE__ */ new Set();
+function emitChatEvent(event) {
+	chatListeners.forEach((fn) => fn(event));
+}
+function cancelActiveRetry() {
+	if (activeRetryTimerId !== null) {
+		window.clearTimeout(activeRetryTimerId);
+		activeRetryTimerId = null;
+	}
+	activeAttemptToken += 1;
+	activeInFlightUserMsgId = null;
+	writePendingRetry(null);
+}
+function scheduleModuleRetry(pending, delayMs) {
+	if (activeRetryTimerId !== null) window.clearTimeout(activeRetryTimerId);
+	writePendingRetry(pending);
+	activeRetryTimerId = window.setTimeout(() => {
+		activeRetryTimerId = null;
+		executeChatAttempt({
+			attemptToken: pending.attemptToken,
+			attempt: pending.attempt,
+			userMessageId: pending.userMessageId,
+			messageText: pending.messageText,
+			history: pending.history,
+			images: pending.images
+		});
+	}, Math.max(0, delayMs));
+}
+async function executeChatAttempt(params) {
+	const { attemptToken, attempt, userMessageId, messageText, history, images } = params;
+	if (activeAttemptToken !== attemptToken) return;
+	activeInFlightUserMsgId = userMessageId;
+	emitChatEvent({
+		type: "attempt_started",
+		userMessageId
+	});
+	let succeeded = false;
+	let botReply = null;
+	let failureMessage = "تعذّر الوصول للذكاء الاصطناعي — حاول لاحقاً";
+	let timeoutHandle;
+	try {
+		const res = await Promise.race([backend.sendChatMessage({
+			history,
+			message: messageText.slice(0, MAX_CHARS),
+			images
+		}), new Promise((resolve) => {
+			timeoutHandle = window.setTimeout(() => resolve({
+				ok: false,
+				message: "استغرق الاتصال بالذكاء الاصطناعي وقتاً طويلاً — حاول لاحقاً"
+			}), 62e3);
+		})]);
+		if (res.ok) {
+			succeeded = true;
+			botReply = {
+				reply: res.reply,
+				estimate: res.estimate
+			};
+		} else if (res.message) failureMessage = res.message;
+	} catch {
+		succeeded = false;
+	} finally {
+		if (timeoutHandle !== void 0) window.clearTimeout(timeoutHandle);
+	}
+	if (activeAttemptToken !== attemptToken) return;
+	activeInFlightUserMsgId = null;
+	const baseMessages = readStoredMessages().filter((m) => !m.isRetryStatus);
+	if (succeeded && botReply) {
+		writePendingRetry(null);
+		const botMsg = {
+			id: `b_${Date.now()}`,
+			role: "bot",
+			text: botReply.reply,
+			createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+			estimate: botReply.estimate,
+			promptDescription: messageText
+		};
+		const nextMsgs = [...baseMessages, botMsg];
+		syncMessagesToStorage(nextMsgs, images.length > 0 && botReply.estimate ? images.map((url, idx) => ({
+			id: `sent_${botMsg.id}_${idx}`,
+			previewUrl: url,
+			publicUrl: url,
+			status: "ready",
+			index: idx,
+			isObjectUrl: false
+		})) : void 0);
+		emitChatEvent({
+			type: "messages_updated",
+			messages: nextMsgs,
+			clearInput: true,
+			markAttachmentsSent: images.length > 0
+		});
+		return;
+	}
+	if (attempt < 3) {
+		const nextAttempt = attempt + 1;
+		const delayMs = attempt === 1 ? 3e4 : 6e4;
+		scheduleModuleRetry({
+			userMessageId,
+			messageText,
+			attempt: nextAttempt,
+			dueAt: Date.now() + delayMs,
+			history,
+			images,
+			attemptToken
+		}, delayMs);
+		emitChatEvent({
+			type: "retry_scheduled",
+			messages: [...baseMessages, createRetryStatusMessage(attemptToken)]
+		});
+		return;
+	}
+	writePendingRetry(null);
+	const errMsg = {
+		id: `err_${Date.now()}`,
+		role: "bot",
+		text: failureMessage,
+		createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+		isError: true
+	};
+	const nextMsgs = [...baseMessages, errMsg];
+	syncMessagesToStorage(nextMsgs);
+	emitChatEvent({
+		type: "messages_updated",
+		messages: nextMsgs
+	});
+}
 function ChatScreen() {
 	const { user, settings, refreshProfile, showToast } = useApp();
 	const navigate = useNavigate();
 	const [messages, setMessages] = (0, import_react.useState)(() => {
-		try {
-			const saved = localStorage.getItem(CHAT_STORAGE_KEY);
-			if (saved) {
-				const parsed = JSON.parse(saved);
-				if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-			}
-		} catch {}
-		return createDefaultMessages();
+		const stored = readStoredMessages();
+		const lastNonRetry = [...stored].reverse().find((m) => !m.isRetryStatus);
+		const pending = readPendingRetry();
+		if (pending && lastNonRetry?.role === "user" && (pending.userMessageId === lastNonRetry.id || pending.messageText === lastNonRetry.text) && activeInFlightUserMsgId !== lastNonRetry.id) return [...stored, createRetryStatusMessage(pending.attemptToken || activeAttemptToken)];
+		return stored;
 	});
 	const [hasInteracted, setHasInteracted] = (0, import_react.useState)(() => messages.some((m) => m.role === "user"));
 	const [input, setInput] = (0, import_react.useState)("");
@@ -53288,21 +54561,27 @@ function ChatScreen() {
 		const latestEst = [...messages].reverse().find((m) => m.role === "bot" && Boolean(m.estimate));
 		return Boolean(latestEst?.attachedImages?.some((item) => item && item.status === "ready" && isHttpUrl(item.publicUrl)));
 	});
-	const [imageUrlInput, setImageUrlInput] = (0, import_react.useState)("");
-	const [imageUrlError, setImageUrlError] = (0, import_react.useState)(null);
-	const [thinking, setThinking] = (0, import_react.useState)(false);
-	const [isWaitingRetry, setIsWaitingRetry] = (0, import_react.useState)(false);
+	const [thinking, setThinking] = (0, import_react.useState)(() => {
+		const stored = readStoredMessages();
+		const lastMsg = stored[stored.length - 1];
+		return Boolean(lastMsg?.role === "user" && activeInFlightUserMsgId === lastMsg.id);
+	});
+	const [isWaitingRetry, setIsWaitingRetry] = (0, import_react.useState)(() => {
+		const stored = readStoredMessages();
+		const lastMsg = stored[stored.length - 1];
+		const pending = readPendingRetry();
+		return Boolean(pending && lastMsg?.role === "user" && (pending.userMessageId === lastMsg.id || pending.messageText === lastMsg.text) && activeInFlightUserMsgId !== lastMsg.id);
+	});
 	const [thinkingStep, setThinkingStep] = (0, import_react.useState)("analyzing");
 	const [buildingId, setBuildingId] = (0, import_react.useState)(null);
 	const [isOnline, setIsOnline] = (0, import_react.useState)(typeof navigator !== "undefined" ? navigator.onLine : true);
 	const [supabaseNoticeMsgId, setSupabaseNoticeMsgId] = (0, import_react.useState)(null);
+	const [notifDeniedBanner, setNotifDeniedBanner] = (0, import_react.useState)(false);
 	const listEndRef = (0, import_react.useRef)(null);
 	const fileInputRef = (0, import_react.useRef)(null);
 	const uploadCounterRef = (0, import_react.useRef)(0);
 	const attachmentsRef = (0, import_react.useRef)([]);
 	const messagesRef = (0, import_react.useRef)(messages);
-	const retryTimerRef = (0, import_react.useRef)(null);
-	const retryAttemptTokenRef = (0, import_react.useRef)(0);
 	messagesRef.current = messages;
 	(0, import_react.useEffect)(() => {
 		syncMessagesToStorage(messages, attachments);
@@ -53311,12 +54590,84 @@ function ChatScreen() {
 		attachmentsRef.current = attachments;
 	}, [attachments]);
 	(0, import_react.useEffect)(() => {
+		let active = true;
+		getBuildNotificationStatus().then(({ status, rememberedDenied }) => {
+			if (!active) return;
+			if (status === "granted") setNotifDeniedBanner(false);
+			else if (rememberedDenied) setNotifDeniedBanner(true);
+		});
 		return () => {
-			if (retryTimerRef.current !== null) {
-				window.clearTimeout(retryTimerRef.current);
-				retryTimerRef.current = null;
+			active = false;
+		};
+	}, []);
+	(0, import_react.useEffect)(() => {
+		const listener = (event) => {
+			if (event.type === "attempt_started") {
+				setThinking(true);
+				setIsWaitingRetry(false);
+				setMessages((prev) => prev.filter((m) => !m.isRetryStatus));
+				return;
 			}
-			retryAttemptTokenRef.current += 1;
+			if (event.type === "retry_scheduled") {
+				setMessages(event.messages);
+				setThinking(false);
+				setIsWaitingRetry(true);
+				return;
+			}
+			if (event.type === "messages_updated") {
+				setMessages(event.messages);
+				setThinking(false);
+				setIsWaitingRetry(false);
+				if (event.clearInput) setInput("");
+				if (event.markAttachmentsSent) setAttachmentsSent(true);
+			}
+		};
+		chatListeners.add(listener);
+		const stored = readStoredMessages();
+		const lastNonRetry = [...stored].reverse().find((m) => !m.isRetryStatus);
+		const pending = readPendingRetry();
+		if (lastNonRetry?.role === "user" && pending && (pending.userMessageId === lastNonRetry.id || pending.messageText === lastNonRetry.text)) {
+			if (activeInFlightUserMsgId === lastNonRetry.id) {
+				setThinking(true);
+				setIsWaitingRetry(false);
+			} else {
+				setIsWaitingRetry(true);
+				setThinking(false);
+				setMessages((prev) => prev.some((m) => m.isRetryStatus) ? prev : [...stored, createRetryStatusMessage(pending.attemptToken || activeAttemptToken)]);
+				if (activeRetryTimerId === null) {
+					const resumedToken = Math.max(activeAttemptToken + 1, pending.attemptToken + 1);
+					activeAttemptToken = resumedToken;
+					scheduleModuleRetry({
+						...pending,
+						userMessageId: lastNonRetry.id,
+						attemptToken: resumedToken
+					}, Math.max(0, pending.dueAt - Date.now()));
+				}
+			}
+		} else if (lastNonRetry?.role === "user" && activeInFlightUserMsgId !== lastNonRetry.id) {
+			writePendingRetry(null);
+			const token = ++activeAttemptToken;
+			const history = stored.filter((m) => m.id !== "welcome" && !m.isError && !m.isRetryStatus).map((m) => ({
+				role: m.role,
+				text: m.text
+			}));
+			setThinking(true);
+			setIsWaitingRetry(false);
+			executeChatAttempt({
+				attemptToken: token,
+				attempt: 1,
+				userMessageId: lastNonRetry.id,
+				messageText: lastNonRetry.text,
+				history,
+				images: lastNonRetry.images || []
+			});
+		}
+		return () => {
+			chatListeners.delete(listener);
+		};
+	}, []);
+	(0, import_react.useEffect)(() => {
+		return () => {
 			attachmentsRef.current.forEach((item) => {
 				if (item.isObjectUrl) URL.revokeObjectURL(item.previewUrl);
 			});
@@ -53424,62 +54775,19 @@ function ChatScreen() {
 			return [];
 		});
 		setAttachmentsSent(false);
-		setImageUrlInput("");
-		setImageUrlError(null);
-	};
-	const handleAddImageUrl = () => {
-		const trimmed = imageUrlInput.trim();
-		if (!trimmed) return;
-		if (!isValidImageUrl(trimmed)) {
-			setImageUrlError("أدخل رابط صورة صحيح يبدأ بـ http(s) وينتهي بامتداد صورة");
-			return;
-		}
-		const shouldReplace = attachmentsSent;
-		if (!shouldReplace && attachments.length >= MAX_ATTACHED_IMAGES) {
-			showToast("الحد الأقصى 5 صور مرفقة في المحادثة", "info");
-			return;
-		}
-		setImageUrlError(null);
-		setImageUrlInput("");
-		if (shouldReplace) {
-			setAttachments((prev) => {
-				prev.forEach((item) => {
-					if (item.isObjectUrl) URL.revokeObjectURL(item.previewUrl);
-				});
-				return [{
-					id: `url_${Date.now()}_${uploadCounterRef.current++}`,
-					previewUrl: trimmed,
-					publicUrl: trimmed,
-					status: "ready",
-					index: 0,
-					isObjectUrl: false
-				}];
-			});
-			setAttachmentsSent(false);
-		} else setAttachments((prev) => [...prev, {
-			id: `url_${Date.now()}_${uploadCounterRef.current++}`,
-			previewUrl: trimmed,
-			publicUrl: trimmed,
-			status: "ready",
-			index: prev.length,
-			isObjectUrl: false
-		}]);
 	};
 	const sendMessage = async (rawText) => {
 		const text = rawText.trim();
 		if (!text) return;
-		let cancelledPendingRetry = false;
-		if (retryTimerRef.current !== null) {
-			window.clearTimeout(retryTimerRef.current);
-			retryTimerRef.current = null;
-			retryAttemptTokenRef.current += 1;
+		const hadPendingRetry = activeRetryTimerId !== null || readPendingRetry() !== null || isWaitingRetry;
+		if (hadPendingRetry) {
+			cancelActiveRetry();
 			setIsWaitingRetry(false);
-			cancelledPendingRetry = true;
 			setMessages((prev) => prev.filter((m) => !m.isRetryStatus));
 		}
-		if (thinking && !cancelledPendingRetry) return;
+		if ((thinking || activeInFlightUserMsgId !== null) && !hadPendingRetry) return;
 		if (attachments.some((a) => a.status === "uploading")) {
-			if (cancelledPendingRetry) setThinking(false);
+			if (hadPendingRetry) setThinking(false);
 			showToast("انتظر اكتمال رفع الصور", "info");
 			return;
 		}
@@ -53494,79 +54802,33 @@ function ChatScreen() {
 			images: readyImages.length > 0 ? readyImages : void 0
 		};
 		const nextHistory = [...messagesRef.current.filter((m) => !m.isRetryStatus), userMsg];
+		syncMessagesToStorage(nextHistory, attachments);
 		setMessages(nextHistory);
 		setThinking(true);
 		trackAppEvent("chat_prompt_sent", { length: text.length });
-		const attemptToken = ++retryAttemptTokenRef.current;
-		const runAttempt = async (attempt) => {
-			if (retryAttemptTokenRef.current !== attemptToken) return;
-			setIsWaitingRetry(false);
-			let succeeded = false;
-			let botReply = null;
-			try {
-				const res = await backend.sendChatMessage({
-					history: nextHistory.filter((m) => m.id !== "welcome" && !m.isError && !m.isRetryStatus).map((m) => ({
-						role: m.role,
-						text: m.text
-					})),
-					message: text,
-					images: readyImages
-				});
-				if (res.ok) {
-					succeeded = true;
-					botReply = {
-						reply: res.reply,
-						estimate: res.estimate
-					};
-				}
-			} catch {
-				succeeded = false;
-			}
-			if (retryAttemptTokenRef.current !== attemptToken) return;
-			if (succeeded && botReply) {
-				if (readyImages.length > 0) setAttachmentsSent(true);
-				const botMsg = {
-					id: `b_${Date.now()}`,
-					role: "bot",
-					text: botReply.reply,
-					createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-					estimate: botReply.estimate,
-					promptDescription: text
-				};
-				setMessages((prev) => [...prev.filter((m) => !m.isRetryStatus), botMsg]);
-				setInput("");
-				setThinking(false);
-				setIsWaitingRetry(false);
-				return;
-			}
-			if (attempt < 3) {
-				setMessages((prev) => [...prev.filter((m) => !m.isRetryStatus), {
-					id: `retry_${attemptToken}`,
-					role: "bot",
-					text: "الذكاء الاصطناعي مشغول — بحاول تاني…",
-					createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-					isRetryStatus: true
-				}]);
-				setIsWaitingRetry(true);
-				const delayMs = attempt === 1 ? 3e4 : 6e4;
-				retryTimerRef.current = window.setTimeout(() => {
-					retryTimerRef.current = null;
-					runAttempt(attempt + 1);
-				}, delayMs);
-				return;
-			}
-			setMessages((prev) => [...prev.filter((m) => !m.isRetryStatus), {
-				id: `err_${Date.now()}`,
-				role: "bot",
-				text: "تعذّر الوصول للذكاء الاصطناعي — حاول لاحقاً",
-				createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-				isError: true
-			}]);
-			setInput("");
-			setThinking(false);
-			setIsWaitingRetry(false);
-		};
-		await runAttempt(1);
+		const attemptToken = ++activeAttemptToken;
+		const historyPayload = nextHistory.filter((m) => m.id !== "welcome" && !m.isError && !m.isRetryStatus).map((m) => ({
+			role: m.role,
+			text: m.text
+		}));
+		await executeChatAttempt({
+			attemptToken,
+			attempt: 1,
+			userMessageId: userMsg.id,
+			messageText: text,
+			history: historyPayload,
+			images: readyImages
+		});
+	};
+	const handleEnableNotificationsInline = async () => {
+		const res = await requestAndRegisterBuildNotifications();
+		if (res.granted) {
+			setNotifDeniedBanner(false);
+			showToast("تم تفعيل إشعارات جاهزية التطبيق بنجاح", "success");
+		} else {
+			setNotifDeniedBanner(res.supported);
+			showToast(res.status === "denied" ? "تم رفض الإذن — يمكنك تفعيل الإشعارات لاحقاً من الإعدادات أو شاشة حسابي" : res.reason || "تعذّر تفعيل الإشعارات", "info");
+		}
 	};
 	const handleBuildApp = async (msgId, description, estimate) => {
 		if (buildingId) return;
@@ -53583,6 +54845,11 @@ function ChatScreen() {
 		const readyImages = attachments.filter((a) => a.status === "ready" && a.publicUrl).map((a) => a.publicUrl);
 		setBuildingId(msgId);
 		try {
+			const notifRes = await requestAndRegisterBuildNotifications();
+			if (!notifRes.granted && notifRes.supported) {
+				setNotifDeniedBanner(true);
+				showToast("تم رفض إذن الإشعارات — سيستمر بناء التطبيق ويمكنك تفعيلها لاحقاً", "info");
+			} else if (notifRes.granted) setNotifDeniedBanner(false);
 			const res = await backend.startBuild({
 				description,
 				complexity: estimate.complexity,
@@ -53880,6 +55147,38 @@ function ChatScreen() {
 				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { ref: listEndRef })
 			]
 		}),
+		notifDeniedBanner && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+			className: "shrink-0 bg-[#FFF9EB] border-t border-[#D5B45C]/40 px-3.5 py-2.5 flex items-center justify-between gap-2 text-[11px] text-[#7B5D12]",
+			children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+				className: "flex items-start gap-2 min-w-0",
+				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(BellOff, { className: "w-4 h-4 text-[#B8922E] shrink-0 mt-0.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+					className: "min-w-0 space-y-1",
+					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+						className: "font-bold leading-snug",
+						children: "تم رفض إذن الإشعارات — سيستمر بناء تطبيقك بشكل طبيعي، ولن تصلك إشعارات الجاهزية تلقائياً."
+					}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+						className: "flex flex-wrap items-center gap-3",
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+							type: "button",
+							onClick: handleEnableNotificationsInline,
+							className: "font-extrabold text-[#2878E8] underline",
+							children: "إعادة السؤال عن الإذن"
+						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+							type: "button",
+							onClick: () => navigate("/profile"),
+							className: "font-bold text-[#101D35] underline",
+							children: "تفعيلها من حسابي"
+						})]
+					})]
+				})]
+			}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+				type: "button",
+				onClick: () => setNotifDeniedBanner(false),
+				"aria-label": "إغلاق التنبيه",
+				className: "p-1 text-[#7B5D12] hover:text-[#101D35] shrink-0",
+				children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(X, { className: "w-3.5 h-3.5" })
+			})]
+		}),
 		/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", {
 			onSubmit: handleSubmit,
 			className: "shrink-0 bg-white border-t border-slate-200 p-3 space-y-2",
@@ -53963,43 +55262,6 @@ function ChatScreen() {
 						]
 					}, att.id))
 				}),
-				/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-					className: "space-y-1",
-					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-						className: "flex items-center gap-1.5",
-						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "relative flex-1",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Link2, { className: "w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
-								type: "text",
-								inputMode: "url",
-								value: imageUrlInput,
-								onChange: (e) => {
-									setImageUrlInput(e.target.value);
-									if (imageUrlError) setImageUrlError(null);
-								},
-								onKeyDown: (e) => {
-									if (e.key === "Enter") {
-										e.preventDefault();
-										handleAddImageUrl();
-									}
-								},
-								placeholder: "أو الصق رابط صورة",
-								"aria-label": "أو الصق رابط صورة",
-								className: "w-full h-9 rounded-lg border border-slate-200 bg-[#F8FAFC] pr-8 pl-2.5 text-xs text-[#101D35] placeholder:text-slate-400 focus:outline-none focus:border-[#2878E8] focus:bg-white transition-colors"
-							})]
-						}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-							type: "button",
-							onClick: handleAddImageUrl,
-							disabled: !imageUrlInput.trim() || thinking || !attachmentsSent && attachments.length >= MAX_ATTACHED_IMAGES,
-							"aria-label": "إضافة رابط صورة",
-							className: "h-9 px-2.5 rounded-lg border border-slate-200 bg-[#F8FAFC] hover:bg-slate-100 disabled:opacity-50 text-[#101D35] text-xs font-bold flex items-center gap-1 transition-colors shrink-0",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Plus, { className: "w-3.5 h-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "إضافة" })]
-						})]
-					}), imageUrlError && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-						className: "text-[11px] font-semibold text-red-600 px-1",
-						children: imageUrlError
-					})]
-				}),
 				input.length > 1500 && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 					className: "text-[11px] text-slate-400 tabular-nums px-1",
 					children: [
@@ -54022,6 +55284,7 @@ var TX_LABELS$1 = {
 	admin_credit: "شحن إداري",
 	admin_debit: "خصم إداري"
 };
+var REASON_LABELS = { "build refund": "استرداد — فشل بناء التطبيق" };
 function WalletScreen() {
 	const { user, settings, refreshProfile, showToast } = useApp();
 	const navigate = useNavigate();
@@ -54064,158 +55327,166 @@ function WalletScreen() {
 		if (amount >= 0) return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ArrowDownLeft, { className: "w-4 h-4 text-emerald-600" });
 		return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ArrowUpRight, { className: "w-4 h-4 text-slate-600" });
 	};
-	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(MobileShell, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", {
-		className: "shrink-0 bg-[#101D35] text-white px-5 py-3.5 flex items-center justify-between",
-		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-			className: "flex items-center gap-2.5",
-			children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(BoslaLogo, {
-				size: 32,
-				variant: "dark"
-			}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", {
-				className: "text-base font-extrabold",
-				children: "محفظتي"
-			})]
-		}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-			type: "button",
-			onClick: loadWalletData,
-			"aria-label": "تحديث المحفظة",
-			className: "min-w-[40px] min-h-[40px] rounded-xl bg-white/10 hover:bg-white/15 flex items-center justify-center",
-			children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: `w-4 h-4 ${loading ? "animate-spin" : ""}` })
-		})]
-	}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-		className: "flex-1 overflow-y-auto px-4 py-4 space-y-5",
-		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
-			className: "rounded-3xl bg-[#101D35] text-white p-5 shadow-md space-y-4",
+	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(MobileShell, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+		className: "shrink-0",
+		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", {
+			className: "bg-[#101D35] text-white px-5 py-3.5 flex items-center justify-between",
 			children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-				className: "flex items-center justify-between gap-2",
-				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-						className: "text-xs text-slate-300",
-						children: "الرصيد المتاح"
-					}),
-					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-						className: "flex items-baseline gap-2 mt-1",
-						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-							className: "text-3xl font-extrabold tabular-nums",
-							children: balancePoints.toLocaleString("en-US")
-						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-							className: "text-sm font-bold text-[#D5B45C]",
-							children: "نقطة"
-						})]
-					}),
-					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
-						className: "text-xs text-slate-300 mt-1 tabular-nums",
-						children: [
-							"يعادل ",
-							balanceSdg.toLocaleString("en-US"),
-							" جنيه سوداني"
-						]
-					})
-				] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-					type: "button",
-					onClick: () => navigate("/topup"),
-					className: "min-h-[44px] px-4 py-2 rounded-xl bg-[#2878E8] hover:bg-[#1E66CC] text-white font-bold text-xs flex items-center gap-1.5 shadow-sm active:scale-[0.98] transition-all shrink-0",
-					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CirclePlus, { className: "w-4 h-4" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "شحن النقاط" })]
+				className: "flex items-center gap-2.5",
+				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(BoslaLogo, {
+					size: 32,
+					variant: "dark"
+				}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", {
+					className: "text-base font-extrabold",
+					children: "محفظتي"
 				})]
-			}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-				className: "pt-3 border-t border-white/10 flex items-center justify-between gap-2",
-				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-					className: "text-[11px] text-slate-400",
-					children: "رقم المحفظة"
-				}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-					dir: "ltr",
-					className: "text-sm font-extrabold tracking-wider text-white tabular-nums",
-					children: user?.wallet_number || "BOS-—"
-				})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-					type: "button",
-					onClick: handleCopyWallet,
-					className: "min-h-[38px] px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-bold flex items-center gap-1.5 transition-colors",
-					children: copied ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Check, { className: "w-3.5 h-3.5 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "تم النسخ" })] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Copy, { className: "w-3.5 h-3.5 text-[#D5B45C]" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "نسخ الرقم" })] })
-				})]
+			}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+				type: "button",
+				onClick: loadWalletData,
+				"aria-label": "تحديث المحفظة",
+				className: "min-w-[40px] min-h-[40px] rounded-xl bg-white/10 hover:bg-white/15 flex items-center justify-center",
+				children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: `w-4 h-4 ${loading ? "animate-spin" : ""}` })
 			})]
-		}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
-			className: "space-y-3",
-			children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-				className: "flex items-center justify-between px-1",
-				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", {
-					className: "text-sm font-extrabold text-[#101D35]",
-					children: "سجل المعاملات"
-				}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-					className: "text-xs text-slate-500 tabular-nums",
-					children: [transactions.length, " عملية"]
-				})]
-			}), loading ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-				className: "space-y-2.5",
-				children: [
-					1,
-					2,
-					3
-				].map((i) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-16 rounded-2xl bg-white border border-slate-200 animate-pulse" }, i))
-			}) : error ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-				className: "rounded-2xl bg-red-50 border border-red-200 p-4 text-center space-y-2",
-				children: [
-					/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CircleAlert, { className: "w-6 h-6 text-red-600 mx-auto" }),
-					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-						className: "text-xs font-semibold text-red-800",
-						children: error
-					}),
-					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+		}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+			className: "px-4 pt-4 pb-2",
+			children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
+				className: "rounded-3xl bg-[#101D35] text-white p-5 shadow-md space-y-4",
+				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+					className: "flex items-center justify-between gap-2",
+					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+							className: "text-xs text-slate-300",
+							children: "الرصيد المتاح"
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "flex items-baseline gap-2 mt-1",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+								className: "text-3xl font-extrabold tabular-nums",
+								children: balancePoints.toLocaleString("en-US")
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+								className: "text-sm font-bold text-[#D5B45C]",
+								children: "نقطة"
+							})]
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+							className: "text-xs text-slate-300 mt-1 tabular-nums",
+							children: [
+								"يعادل ",
+								balanceSdg.toLocaleString("en-US"),
+								" جنيه سوداني"
+							]
+						})
+					] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 						type: "button",
-						onClick: loadWalletData,
-						className: "text-xs font-bold text-[#2878E8] underline",
-						children: "إعادة المحاولة"
-					})
-				]
-			}) : transactions.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-				className: "rounded-2xl bg-white border border-slate-200 p-6 text-center text-xs text-slate-500",
-				children: "لا توجد معاملات مسجّلة حتى الآن."
-			}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-				className: "bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100 overflow-hidden",
-				children: transactions.map((tx) => {
-					const positive = tx.amount >= 0;
-					return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-						className: "px-4 py-3.5 flex items-center justify-between gap-3",
-						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "flex items-center gap-3 min-w-0",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-								className: "w-9 h-9 rounded-xl bg-slate-100 flex items-center justify-center shrink-0",
-								children: renderTxIcon(tx.type, tx.amount)
-							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "min-w-0",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-									className: "text-xs font-bold text-[#101D35] truncate",
-									children: tx.description || TX_LABELS$1[tx.type]
-								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
-									className: "text-[11px] text-slate-500 mt-0.5 flex items-center gap-1.5",
-									children: [
-										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: TX_LABELS$1[tx.type] }),
-										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											"aria-hidden": "true",
-											children: "·"
-										}),
-										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "tabular-nums",
-											children: new Date(tx.created_at).toLocaleDateString("ar-SD", {
-												month: "short",
-												day: "numeric"
-											})
-										})
-									]
-								})]
-							})]
+						onClick: () => navigate("/topup"),
+						className: "min-h-[44px] px-4 py-2 rounded-xl bg-[#2878E8] hover:bg-[#1E66CC] text-white font-bold text-xs flex items-center gap-1.5 shadow-sm active:scale-[0.98] transition-all shrink-0",
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CirclePlus, { className: "w-4 h-4" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "شحن النقاط" })]
+					})]
+				}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+					className: "pt-3 border-t border-white/10 flex items-center justify-between gap-2",
+					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+						className: "text-[11px] text-slate-400",
+						children: "رقم المحفظة"
+					}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+						dir: "ltr",
+						className: "text-sm font-extrabold tracking-wider text-white tabular-nums",
+						children: user?.wallet_number || "BOS-—"
+					})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+						type: "button",
+						onClick: handleCopyWallet,
+						className: "min-h-[38px] px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-bold flex items-center gap-1.5 transition-colors",
+						children: copied ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Check, { className: "w-3.5 h-3.5 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "تم النسخ" })] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Copy, { className: "w-3.5 h-3.5 text-[#D5B45C]" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "نسخ الرقم" })] })
+					})]
+				})]
+			})
+		})]
+	}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
+		className: "flex-1 min-h-0 overflow-y-auto px-4 pt-3 pb-4 space-y-3",
+		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+			className: "flex items-center justify-between px-1",
+			children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", {
+				className: "text-sm font-extrabold text-[#101D35]",
+				children: "سجل المعاملات"
+			}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+				className: "text-xs text-slate-500 tabular-nums",
+				children: [transactions.length, " عملية"]
+			})]
+		}), loading ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+			className: "space-y-2.5",
+			children: [
+				1,
+				2,
+				3
+			].map((i) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-16 rounded-2xl bg-white border border-slate-200 animate-pulse" }, i))
+		}) : error ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+			className: "rounded-2xl bg-red-50 border border-red-200 p-4 text-center space-y-2",
+			children: [
+				/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CircleAlert, { className: "w-6 h-6 text-red-600 mx-auto" }),
+				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+					className: "text-xs font-semibold text-red-800",
+					children: error
+				}),
+				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+					type: "button",
+					onClick: loadWalletData,
+					className: "text-xs font-bold text-[#2878E8] underline",
+					children: "إعادة المحاولة"
+				})
+			]
+		}) : transactions.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+			className: "rounded-2xl bg-white border border-slate-200 p-6 text-center text-xs text-slate-500",
+			children: "لا توجد معاملات مسجّلة حتى الآن."
+		}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+			className: "bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100 overflow-hidden",
+			children: transactions.map((tx) => {
+				const positive = tx.amount >= 0;
+				const reasonLabel = REASON_LABELS[tx.description];
+				const isBuildRefund = tx.description === "build refund" || tx.description === "استرداد — فشل بناء التطبيق";
+				const displayTitle = reasonLabel || tx.description || TX_LABELS$1[tx.type];
+				const displaySubtitle = isBuildRefund ? "استرداد — فشل بناء التطبيق" : TX_LABELS$1[tx.type];
+				const iconType = isBuildRefund ? "refund" : tx.type;
+				return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+					className: "px-4 py-3.5 flex items-center justify-between gap-3",
+					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+						className: "flex items-center gap-3 min-w-0",
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+							className: "w-9 h-9 rounded-xl bg-slate-100 flex items-center justify-center shrink-0",
+							children: renderTxIcon(iconType, tx.amount)
 						}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "text-left shrink-0",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
-								className: `text-sm font-extrabold tabular-nums ${positive ? "text-emerald-600" : "text-[#101D35]"}`,
-								children: [positive ? `+${tx.amount}` : tx.amount, " نقطة"]
+							className: "min-w-0",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+								className: "text-xs font-bold text-[#101D35] truncate",
+								children: displayTitle
 							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
-								className: "text-[11px] text-slate-400 tabular-nums mt-0.5",
-								children: ["الرصيد: ", tx.balance_after]
+								className: "text-[11px] text-slate-500 mt-0.5 flex items-center gap-1.5",
+								children: [
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: displaySubtitle }),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										"aria-hidden": "true",
+										children: "·"
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "tabular-nums",
+										children: new Date(tx.created_at).toLocaleDateString("ar-SD", {
+											month: "short",
+											day: "numeric"
+										})
+									})
+								]
 							})]
 						})]
-					}, tx.id);
-				})
-			})]
+					}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+						className: "text-left shrink-0",
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+							className: `text-sm font-extrabold tabular-nums ${positive ? "text-emerald-600" : "text-[#101D35]"}`,
+							children: [positive ? `+${tx.amount}` : tx.amount, " نقطة"]
+						}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+							className: "text-[11px] text-slate-400 tabular-nums mt-0.5",
+							children: ["الرصيد: ", tx.balance_after]
+						})]
+					})]
+				}, tx.id);
+			})
 		})]
 	})] });
 }
@@ -54246,6 +55517,11 @@ var METHODS = [
 		icon: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Smartphone, { className: "w-5 h-5" })
 	}
 ];
+var METHOD_INSTRUCTIONS = {
+	bankak: "حوّل عبر بنكك",
+	sahil: "عبر تطبيق ساهل",
+	mycashy: "عبر تطبيق ماي كاشي"
+};
 function TopupScreen() {
 	const { settings, showToast } = useApp();
 	const navigate = useNavigate();
@@ -54399,21 +55675,44 @@ function TopupScreen() {
 					})
 				]
 			}),
-			/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-				className: "rounded-2xl bg-[#FFF9EB] border border-[#D5B45C]/40 px-4 py-3 text-xs font-medium text-[#7B5D12] leading-relaxed",
-				children: "أرسل الرسالة وسيتم شحن نقاطك بعد تأكيد الدفع مباشرة."
+			/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+				className: "rounded-2xl bg-[#FFF9EB] border border-[#D5B45C]/40 px-4 py-3.5 text-xs text-[#7B5D12] space-y-2 leading-relaxed",
+				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+					className: "font-extrabold text-[#5E450A]",
+					children: [
+						"تعليمات الدفع (",
+						TOPUP_METHOD_LABELS[method],
+						" — ",
+						METHOD_INSTRUCTIONS[method],
+						")"
+					]
+				}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("ol", {
+					className: "list-decimal list-inside space-y-1 font-medium",
+					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("li", { children: [
+						"حوّل المبلغ (",
+						totalSdg.toLocaleString("en-US"),
+						" ج.س)",
+						" ",
+						method === "bankak" ? "عبر بنكك" : METHOD_INSTRUCTIONS[method],
+						"."
+					] }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("li", { children: "اضغط «تأكيد طلب الشحن» وستُفتح واتساب لإرسال تفاصيل التحويل إلى الإدارة." })]
+				})]
 			}),
 			!whatsappUrl ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 				type: "button",
 				disabled: submitting || points < 20,
 				onClick: handleConfirm,
 				className: "w-full min-h-[50px] rounded-xl bg-[#2878E8] hover:bg-[#1E66CC] disabled:opacity-60 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-sm active:scale-[0.98] transition-all",
-				children: submitting ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-4 h-4 animate-spin" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "جاري تسجيل الطلب…" })] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "تأكيد" })
+				children: submitting ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-4 h-4 animate-spin" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "جاري تسجيل الطلب…" })] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "تأكيد طلب الشحن" })
 			}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 				className: "rounded-2xl bg-emerald-50 border border-emerald-200 p-4 space-y-3",
 				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 					className: "flex items-center gap-2 text-emerald-900 font-bold text-xs",
-					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CircleCheck, { className: "w-4 h-4 text-emerald-600 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "تم تسجيل طلبك! اضغط الزر أدناه لإرسال التفاصيل عبر واتساب:" })]
+					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CircleCheck, { className: "w-4 h-4 text-emerald-600 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
+						"تم تسجيل طلبك عبر ",
+						TOPUP_METHOD_LABELS[method],
+						"! اضغط الزر أدناه لإرسال التفاصيل عبر واتساب:"
+					] })]
 				}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
 					href: whatsappUrl,
 					target: "_blank",
@@ -54425,515 +55724,6 @@ function TopupScreen() {
 		]
 	})] });
 }
-// node_modules/@capacitor/core/dist/index.js
-/*! Capacitor: https://capacitorjs.com/ - MIT License */
-var ExceptionCode;
-(function(ExceptionCode) {
-	/**
-	* API is not implemented.
-	*
-	* This usually means the API can't be used because it is not implemented for
-	* the current platform.
-	*/
-	ExceptionCode["Unimplemented"] = "UNIMPLEMENTED";
-	/**
-	* API is not available.
-	*
-	* This means the API can't be used right now because:
-	*   - it is currently missing a prerequisite, such as network connectivity
-	*   - it requires a particular platform or browser version
-	*/
-	ExceptionCode["Unavailable"] = "UNAVAILABLE";
-})(ExceptionCode || (ExceptionCode = {}));
-var CapacitorException = class extends Error {
-	constructor(message, code, data) {
-		super(message);
-		this.message = message;
-		this.code = code;
-		this.data = data;
-	}
-};
-var getPlatformId = (win) => {
-	var _a, _b;
-	if (win === null || win === void 0 ? void 0 : win.androidBridge) return "android";
-	else if ((_b = (_a = win === null || win === void 0 ? void 0 : win.webkit) === null || _a === void 0 ? void 0 : _a.messageHandlers) === null || _b === void 0 ? void 0 : _b.bridge) return "ios";
-	else return "web";
-};
-var createCapacitor = (win) => {
-	const capCustomPlatform = win.CapacitorCustomPlatform || null;
-	const cap = win.Capacitor || {};
-	const Plugins = cap.Plugins = cap.Plugins || {};
-	const getPlatform = () => {
-		return capCustomPlatform !== null ? capCustomPlatform.name : getPlatformId(win);
-	};
-	const isNativePlatform = () => getPlatform() !== "web";
-	const isPluginAvailable = (pluginName) => {
-		const plugin = registeredPlugins.get(pluginName);
-		if (plugin === null || plugin === void 0 ? void 0 : plugin.platforms.has(getPlatform())) return true;
-		if (getPluginHeader(pluginName)) return true;
-		return false;
-	};
-	const getPluginHeader = (pluginName) => {
-		var _a;
-		return (_a = cap.PluginHeaders) === null || _a === void 0 ? void 0 : _a.find((h) => h.name === pluginName);
-	};
-	const handleError = (err) => win.console.error(err);
-	const registeredPlugins = /* @__PURE__ */ new Map();
-	const registerPlugin = (pluginName, jsImplementations = {}) => {
-		const registeredPlugin = registeredPlugins.get(pluginName);
-		if (registeredPlugin) {
-			console.warn(`Capacitor plugin "${pluginName}" already registered. Cannot register plugins twice.`);
-			return registeredPlugin.proxy;
-		}
-		const platform = getPlatform();
-		const pluginHeader = getPluginHeader(pluginName);
-		let jsImplementation;
-		const loadPluginImplementation = async () => {
-			if (!jsImplementation && platform in jsImplementations) jsImplementation = typeof jsImplementations[platform] === "function" ? jsImplementation = await jsImplementations[platform]() : jsImplementation = jsImplementations[platform];
-			else if (capCustomPlatform !== null && !jsImplementation && "web" in jsImplementations) jsImplementation = typeof jsImplementations["web"] === "function" ? jsImplementation = await jsImplementations["web"]() : jsImplementation = jsImplementations["web"];
-			return jsImplementation;
-		};
-		const createPluginMethod = (impl, prop) => {
-			var _a, _b;
-			if (pluginHeader) {
-				const methodHeader = pluginHeader === null || pluginHeader === void 0 ? void 0 : pluginHeader.methods.find((m) => prop === m.name);
-				if (methodHeader) {
-					if (methodHeader.rtype === "promise") return (options) => cap.nativePromise(pluginName, prop.toString(), options);
-					else return (options, callback) => cap.nativeCallback(pluginName, prop.toString(), options, callback);
-				} else if (impl) return (_a = impl[prop]) === null || _a === void 0 ? void 0 : _a.bind(impl);
-			} else if (impl) return (_b = impl[prop]) === null || _b === void 0 ? void 0 : _b.bind(impl);
-			else throw new CapacitorException(`"${pluginName}" plugin is not implemented on ${platform}`, ExceptionCode.Unimplemented);
-		};
-		const createPluginMethodWrapper = (prop) => {
-			let remove;
-			const wrapper = (...args) => {
-				const p = loadPluginImplementation().then((impl) => {
-					const fn = createPluginMethod(impl, prop);
-					if (fn) {
-						const p = fn(...args);
-						remove = p === null || p === void 0 ? void 0 : p.remove;
-						return p;
-					} else throw new CapacitorException(`"${pluginName}.${prop}()" is not implemented on ${platform}`, ExceptionCode.Unimplemented);
-				});
-				if (prop === "addListener") p.remove = async () => remove();
-				return p;
-			};
-			wrapper.toString = () => `${prop.toString()}() { [capacitor code] }`;
-			Object.defineProperty(wrapper, "name", {
-				value: prop,
-				writable: false,
-				configurable: false
-			});
-			return wrapper;
-		};
-		const addListener = createPluginMethodWrapper("addListener");
-		const removeListener = createPluginMethodWrapper("removeListener");
-		const addListenerNative = (eventName, callback) => {
-			const call = addListener({ eventName }, callback).then((callbackId) => callbackId);
-			const remove = async () => {
-				const callbackId = await call;
-				await removeListener({
-					eventName,
-					callbackId
-				});
-			};
-			const p = new Promise((resolve) => call.then(() => resolve({ remove })));
-			p.remove = async () => {
-				console.warn(`Using addListener() without 'await' is deprecated.`);
-				await remove();
-			};
-			return p;
-		};
-		const proxy = new Proxy({}, { get(_, prop) {
-			switch (prop) {
-				case "$$typeof": return;
-				case "toJSON": return () => ({});
-				case "addListener": return pluginHeader ? addListenerNative : addListener;
-				case "removeListener": return removeListener;
-				default: return createPluginMethodWrapper(prop);
-			}
-		} });
-		Plugins[pluginName] = proxy;
-		registeredPlugins.set(pluginName, {
-			name: pluginName,
-			proxy,
-			platforms: /* @__PURE__ */ new Set([...Object.keys(jsImplementations), ...pluginHeader ? [platform] : []])
-		});
-		return proxy;
-	};
-	if (!cap.convertFileSrc) cap.convertFileSrc = (filePath) => filePath;
-	cap.getPlatform = getPlatform;
-	cap.handleError = handleError;
-	cap.isNativePlatform = isNativePlatform;
-	cap.isPluginAvailable = isPluginAvailable;
-	cap.registerPlugin = registerPlugin;
-	cap.Exception = CapacitorException;
-	cap.DEBUG = !!cap.DEBUG;
-	cap.isLoggingEnabled = !!cap.isLoggingEnabled;
-	return cap;
-};
-var initCapacitorGlobal = (win) => win.Capacitor = createCapacitor(win);
-var Capacitor = /*#__PURE__*/ initCapacitorGlobal(typeof globalThis !== "undefined" ? globalThis : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : typeof global !== "undefined" ? global : {});
-var registerPlugin = Capacitor.registerPlugin;
-/**
-* Base class web plugins should extend.
-*/
-var WebPlugin = class {
-	constructor() {
-		this.listeners = {};
-		this.retainedEventArguments = {};
-		this.windowListeners = {};
-	}
-	addListener(eventName, listenerFunc) {
-		let firstListener = false;
-		if (!this.listeners[eventName]) {
-			this.listeners[eventName] = [];
-			firstListener = true;
-		}
-		this.listeners[eventName].push(listenerFunc);
-		const windowListener = this.windowListeners[eventName];
-		if (windowListener && !windowListener.registered) this.addWindowListener(windowListener);
-		if (firstListener) this.sendRetainedArgumentsForEvent(eventName);
-		const remove = async () => this.removeListener(eventName, listenerFunc);
-		return Promise.resolve({ remove });
-	}
-	async removeAllListeners() {
-		this.listeners = {};
-		for (const listener in this.windowListeners) this.removeWindowListener(this.windowListeners[listener]);
-		this.windowListeners = {};
-	}
-	notifyListeners(eventName, data, retainUntilConsumed) {
-		const listeners = this.listeners[eventName];
-		if (!listeners) {
-			if (retainUntilConsumed) {
-				let args = this.retainedEventArguments[eventName];
-				if (!args) args = [];
-				args.push(data);
-				this.retainedEventArguments[eventName] = args;
-			}
-			return;
-		}
-		listeners.forEach((listener) => listener(data));
-	}
-	hasListeners(eventName) {
-		var _a;
-		return !!((_a = this.listeners[eventName]) === null || _a === void 0 ? void 0 : _a.length);
-	}
-	registerWindowListener(windowEventName, pluginEventName) {
-		this.windowListeners[pluginEventName] = {
-			registered: false,
-			windowEventName,
-			pluginEventName,
-			handler: (event) => {
-				this.notifyListeners(pluginEventName, event);
-			}
-		};
-	}
-	unimplemented(msg = "not implemented") {
-		return new Capacitor.Exception(msg, ExceptionCode.Unimplemented);
-	}
-	unavailable(msg = "not available") {
-		return new Capacitor.Exception(msg, ExceptionCode.Unavailable);
-	}
-	async removeListener(eventName, listenerFunc) {
-		const listeners = this.listeners[eventName];
-		if (!listeners) return;
-		const index = listeners.indexOf(listenerFunc);
-		if (index !== -1) this.listeners[eventName].splice(index, 1);
-		if (!this.listeners[eventName].length) this.removeWindowListener(this.windowListeners[eventName]);
-	}
-	addWindowListener(handle) {
-		window.addEventListener(handle.windowEventName, handle.handler);
-		handle.registered = true;
-	}
-	removeWindowListener(handle) {
-		if (!handle) return;
-		window.removeEventListener(handle.windowEventName, handle.handler);
-		handle.registered = false;
-	}
-	sendRetainedArgumentsForEvent(eventName) {
-		const args = this.retainedEventArguments[eventName];
-		if (!args) return;
-		delete this.retainedEventArguments[eventName];
-		args.forEach((arg) => {
-			this.notifyListeners(eventName, arg);
-		});
-	}
-};
-/******** END WEB VIEW PLUGIN ********/
-/******** COOKIES PLUGIN ********/
-/**
-* Safely web encode a string value (inspired by js-cookie)
-* @param str The string value to encode
-*/
-var encode = (str) => encodeURIComponent(str).replace(/%(2[346B]|5E|60|7C)/g, decodeURIComponent).replace(/[()]/g, escape);
-/**
-* Safely web decode a string value (inspired by js-cookie)
-* @param str The string value to decode
-*/
-var decode = (str) => str.replace(/(%[\dA-F]{2})+/gi, decodeURIComponent);
-var CapacitorCookiesPluginWeb = class extends WebPlugin {
-	async getCookies() {
-		const cookies = document.cookie;
-		const cookieMap = {};
-		cookies.split(";").forEach((cookie) => {
-			if (cookie.length <= 0) return;
-			let [key, value] = cookie.replace(/=/, "CAP_COOKIE").split("CAP_COOKIE");
-			key = decode(key).trim();
-			value = decode(value).trim();
-			cookieMap[key] = value;
-		});
-		return cookieMap;
-	}
-	async setCookie(options) {
-		try {
-			const encodedKey = encode(options.key);
-			const encodedValue = encode(options.value);
-			const expires = options.expires ? `; expires=${options.expires.replace("expires=", "")}` : "";
-			const path = (options.path || "/").replace("path=", "");
-			const domain = options.url != null && options.url.length > 0 ? `domain=${options.url}` : "";
-			document.cookie = `${encodedKey}=${encodedValue || ""}${expires}; path=${path}; ${domain};`;
-		} catch (error) {
-			return Promise.reject(error);
-		}
-	}
-	async deleteCookie(options) {
-		try {
-			document.cookie = `${options.key}=; Max-Age=0`;
-		} catch (error) {
-			return Promise.reject(error);
-		}
-	}
-	async clearCookies() {
-		try {
-			const cookies = document.cookie.split(";") || [];
-			for (const cookie of cookies) document.cookie = cookie.replace(/^ +/, "").replace(/=.*/, `=;expires=${(/* @__PURE__ */ new Date()).toUTCString()};path=/`);
-		} catch (error) {
-			return Promise.reject(error);
-		}
-	}
-	async clearAllCookies() {
-		try {
-			await this.clearCookies();
-		} catch (error) {
-			return Promise.reject(error);
-		}
-	}
-};
-registerPlugin("CapacitorCookies", { web: () => new CapacitorCookiesPluginWeb() });
-/**
-* Read in a Blob value and return it as a base64 string
-* @param blob The blob value to convert to a base64 string
-*/
-var readBlobAsBase64 = async (blob) => new Promise((resolve, reject) => {
-	const reader = new FileReader();
-	reader.onload = () => {
-		const base64String = reader.result;
-		resolve(base64String.indexOf(",") >= 0 ? base64String.split(",")[1] : base64String);
-	};
-	reader.onerror = (error) => reject(error);
-	reader.readAsDataURL(blob);
-});
-/**
-* Normalize an HttpHeaders map by lowercasing all of the values
-* @param headers The HttpHeaders object to normalize
-*/
-var normalizeHttpHeaders = (headers = {}) => {
-	const originalKeys = Object.keys(headers);
-	return Object.keys(headers).map((k) => k.toLocaleLowerCase()).reduce((acc, key, index) => {
-		acc[key] = headers[originalKeys[index]];
-		return acc;
-	}, {});
-};
-/**
-* Builds a string of url parameters that
-* @param params A map of url parameters
-* @param shouldEncode true if you should encodeURIComponent() the values (true by default)
-*/
-var buildUrlParams = (params, shouldEncode = true) => {
-	if (!params) return null;
-	return Object.entries(params).reduce((accumulator, entry) => {
-		const [key, value] = entry;
-		let encodedValue;
-		let item;
-		if (Array.isArray(value)) {
-			item = "";
-			value.forEach((str) => {
-				encodedValue = shouldEncode ? encodeURIComponent(str) : str;
-				item += `${key}=${encodedValue}&`;
-			});
-			item.slice(0, -1);
-		} else {
-			encodedValue = shouldEncode ? encodeURIComponent(value) : value;
-			item = `${key}=${encodedValue}`;
-		}
-		return `${accumulator}&${item}`;
-	}, "").substr(1);
-};
-/**
-* Build the RequestInit object based on the options passed into the initial request
-* @param options The Http plugin options
-* @param extra Any extra RequestInit values
-*/
-var buildRequestInit = (options, extra = {}) => {
-	const output = Object.assign({
-		method: options.method || "GET",
-		headers: options.headers
-	}, extra);
-	const type = normalizeHttpHeaders(options.headers)["content-type"] || "";
-	if (typeof options.data === "string") output.body = options.data;
-	else if (type.includes("application/x-www-form-urlencoded")) {
-		const params = new URLSearchParams();
-		for (const [key, value] of Object.entries(options.data || {})) params.set(key, value);
-		output.body = params.toString();
-	} else if (type.includes("multipart/form-data") || options.data instanceof FormData) {
-		const form = new FormData();
-		if (options.data instanceof FormData) options.data.forEach((value, key) => {
-			form.append(key, value);
-		});
-		else for (const key of Object.keys(options.data)) form.append(key, options.data[key]);
-		output.body = form;
-		const headers = new Headers(output.headers);
-		headers.delete("content-type");
-		output.headers = headers;
-	} else if (type.includes("application/json") || typeof options.data === "object") output.body = JSON.stringify(options.data);
-	return output;
-};
-var CapacitorHttpPluginWeb = class extends WebPlugin {
-	/**
-	* Perform an Http request given a set of options
-	* @param options Options to build the HTTP request
-	*/
-	async request(options) {
-		const requestInit = buildRequestInit(options, options.webFetchExtra);
-		const urlParams = buildUrlParams(options.params, options.shouldEncodeUrlParams);
-		const url = urlParams ? `${options.url}?${urlParams}` : options.url;
-		const response = await fetch(url, requestInit);
-		const contentType = response.headers.get("content-type") || "";
-		let { responseType = "text" } = response.ok ? options : {};
-		if (contentType.includes("application/json")) responseType = "json";
-		let data;
-		let blob;
-		switch (responseType) {
-			case "arraybuffer":
-			case "blob":
-				blob = await response.blob();
-				data = await readBlobAsBase64(blob);
-				break;
-			case "json":
-				data = await response.json();
-				break;
-			default: data = await response.text();
-		}
-		const headers = {};
-		response.headers.forEach((value, key) => {
-			headers[key] = value;
-		});
-		return {
-			data,
-			headers,
-			status: response.status,
-			url: response.url
-		};
-	}
-	/**
-	* Perform an Http GET request given a set of options
-	* @param options Options to build the HTTP request
-	*/
-	async get(options) {
-		return this.request(Object.assign(Object.assign({}, options), { method: "GET" }));
-	}
-	/**
-	* Perform an Http POST request given a set of options
-	* @param options Options to build the HTTP request
-	*/
-	async post(options) {
-		return this.request(Object.assign(Object.assign({}, options), { method: "POST" }));
-	}
-	/**
-	* Perform an Http PUT request given a set of options
-	* @param options Options to build the HTTP request
-	*/
-	async put(options) {
-		return this.request(Object.assign(Object.assign({}, options), { method: "PUT" }));
-	}
-	/**
-	* Perform an Http PATCH request given a set of options
-	* @param options Options to build the HTTP request
-	*/
-	async patch(options) {
-		return this.request(Object.assign(Object.assign({}, options), { method: "PATCH" }));
-	}
-	/**
-	* Perform an Http DELETE request given a set of options
-	* @param options Options to build the HTTP request
-	*/
-	async delete(options) {
-		return this.request(Object.assign(Object.assign({}, options), { method: "DELETE" }));
-	}
-};
-registerPlugin("CapacitorHttp", { web: () => new CapacitorHttpPluginWeb() });
-/******** END HTTP PLUGIN ********/
-/******** SYSTEM BARS PLUGIN ********/
-/**
-* Available status bar styles.
-*/
-var SystemBarsStyle;
-(function(SystemBarsStyle) {
-	/**
-	* Light system bar content on a dark background.
-	*
-	* @since 8.0.0
-	*/
-	SystemBarsStyle["Dark"] = "DARK";
-	/**
-	* For dark system bar content on a light background.
-	*
-	* @since 8.0.0
-	*/
-	SystemBarsStyle["Light"] = "LIGHT";
-	/**
-	* The style is based on the device appearance or the underlying content.
-	* If the device is using Dark mode, the system bars content will be light.
-	* If the device is using Light mode, the system bars content will be dark.
-	*
-	* @since 8.0.0
-	*/
-	SystemBarsStyle["Default"] = "DEFAULT";
-})(SystemBarsStyle || (SystemBarsStyle = {}));
-/**
-* Available system bar types.
-*/
-var SystemBarType;
-(function(SystemBarType) {
-	/**
-	* The top status bar on both Android and iOS.
-	*
-	* @since 8.0.0
-	*/
-	SystemBarType["StatusBar"] = "StatusBar";
-	/**
-	* The navigation bar (or gesture bar on iOS) on both Android and iOS.
-	*
-	* @since 8.0.0
-	*/
-	SystemBarType["NavigationBar"] = "NavigationBar";
-})(SystemBarType || (SystemBarType = {}));
-var SystemBarsPluginWeb = class extends WebPlugin {
-	async setStyle() {
-		this.unavailable("not available for web");
-	}
-	async setAnimation() {
-		this.unavailable("not available for web");
-	}
-	async show() {
-		this.unavailable("not available for web");
-	}
-	async hide() {
-		this.unavailable("not available for web");
-	}
-};
-registerPlugin("SystemBars", { web: () => new SystemBarsPluginWeb() });
 // node_modules/@capacitor/synapse/dist/synapse.mjs
 function s(t) {
 	t.CapacitorUtils.Synapse = new Proxy({}, { get(e, n) {
@@ -55081,115 +55871,8 @@ var Encoding;
 	*/
 	Encoding["UTF16"] = "utf16";
 })(Encoding || (Encoding = {}));
-// \0vite/preload-helper.js
-var scriptRel = "modulepreload";
-var assetsURL = function(dep) {
-	return "/" + dep;
-};
-var seen = {};
-var failedCssLinks = {};
-var isCssPreloadUrl = function isCssPreloadUrl(url) {
-	return url.pathname.endsWith(".css");
-};
-var preloadOnce = function preloadOnce(seen, href, preload) {
-	if (href in seen) return seen[href];
-	const promise = preload();
-	if (!promise) {
-		seen[href] = void 0;
-		return;
-	}
-	const preloadPromise = promise.then(() => {
-		seen[href] = void 0;
-	}, (err) => {
-		delete seen[href];
-		throw err;
-	});
-	seen[href] = preloadPromise;
-	return preloadPromise;
-};
-var __vitePreload = function preload(baseModule, deps, importerUrl) {
-	let promise = Promise.resolve();
-	if (deps && deps.length > 0) {
-		let preloadedHrefs;
-		const cspNonceMeta = document.querySelector("meta[property=csp-nonce]");
-		const cspNonce = cspNonceMeta?.nonce || cspNonceMeta?.getAttribute("nonce");
-		function allSettled(promises) {
-			return Promise.all(promises.map((p) => Promise.resolve(p).then((value) => ({
-				status: "fulfilled",
-				value
-			}), (reason) => ({
-				status: "rejected",
-				reason
-			}))));
-		}
-		function importMetaResolve(specifier) {
-			if (import.meta.resolve) return new URL(import.meta.resolve(specifier));
-			return new URL(
-				specifier,
-				/** #__KEEP__ */
-				import.meta.url
-			);
-		}
-		promise = allSettled(deps.map((depString) => {
-			depString = assetsURL(depString, importerUrl);
-			const dep = importMetaResolve(depString);
-			const isCss = isCssPreloadUrl(dep);
-			return preloadOnce(seen, dep.href, () => {
-				if (preloadedHrefs === void 0) {
-					preloadedHrefs = {
-						all: /* @__PURE__ */ new Set(),
-						styles: /* @__PURE__ */ new Set()
-					};
-					const links = document.getElementsByTagName("link");
-					for (let i = links.length - 1; i >= 0; i--) {
-						const link = links[i];
-						preloadedHrefs.all.add(link.href);
-						if (link.rel === "stylesheet") preloadedHrefs.styles.add(link.href);
-					}
-				}
-				const preloadedHrefSet = isCss ? preloadedHrefs.styles : preloadedHrefs.all;
-				const failedCssLink = isCss ? failedCssLinks[dep.href] : void 0;
-				if (!failedCssLink && preloadedHrefSet.has(dep.href)) return;
-				const link = document.createElement("link");
-				link.rel = isCss ? "stylesheet" : scriptRel;
-				if (!isCss) link.as = "script";
-				link.crossOrigin = "";
-				link.href = dep.href;
-				if (cspNonce) link.setAttribute("nonce", cspNonce);
-				if (failedCssLink) delete failedCssLinks[dep.href];
-				if (failedCssLink?.isConnected) failedCssLink.replaceWith(link);
-				else document.head.appendChild(link);
-				if (isCss) return new Promise((res, rej) => {
-					const handleSettle = (e) => {
-						link.removeEventListener("load", handleSettle);
-						link.removeEventListener("error", handleSettle);
-						if (e.type === "error") {
-							failedCssLinks[dep.href] = link;
-							rej(/* @__PURE__ */ new Error(`Unable to preload CSS for ${dep}`));
-						} else res(e);
-					};
-					link.addEventListener("load", handleSettle);
-					link.addEventListener("error", handleSettle);
-				});
-			});
-		}).filter((p) => p !== void 0));
-	}
-	function handlePreloadError(err) {
-		const e = new Event("vite:preloadError", { cancelable: true });
-		e.payload = err;
-		window.dispatchEvent(e);
-		if (!e.defaultPrevented) throw err;
-	}
-	return promise.then((res) => {
-		for (const item of res || []) {
-			if (item.status !== "rejected") continue;
-			handlePreloadError(item.reason);
-		}
-		return baseModule().catch(handlePreloadError);
-	});
-};
 // node_modules/@capacitor/filesystem/dist/esm/index.js
-var Filesystem = registerPlugin("Filesystem", { web: () => __vitePreload(() => import("./web-qW_bvDt2.js").then((m) => new m.FilesystemWeb()), []) });
+var Filesystem = registerPlugin("Filesystem", { web: () => __vitePreload(() => import("./web-DXAhwgvJ.js").then((m) => new m.FilesystemWeb()), []) });
 f();
 // node_modules/@capacitor-community/file-opener/dist/esm/index.js
 var FileOpener = registerPlugin("FileOpener");
@@ -55206,7 +55889,49 @@ function blobToBase64(blob) {
 		reader.readAsDataURL(blob);
 	});
 }
-async function downloadApkWithProgress(apkUrl, fileName, onProgress, onPhaseChange) {
+function triggerWebBlobDownload(blob, fileName) {
+	const objectUrl = URL.createObjectURL(blob);
+	try {
+		const anchor = document.createElement("a");
+		anchor.href = objectUrl;
+		anchor.download = fileName;
+		document.body.appendChild(anchor);
+		anchor.click();
+		anchor.remove();
+	} finally {
+		window.setTimeout(() => {
+			URL.revokeObjectURL(objectUrl);
+		}, 100);
+	}
+}
+async function openCachedApkInstaller(fileName, apkUrl, cachedBlob) {
+	if (Capacitor.isNativePlatform()) {
+		try {
+			await Filesystem.stat({
+				path: fileName,
+				directory: Directory.Cache
+			});
+		} catch {
+			return "missing_native_cache";
+		}
+		const { uri } = await Filesystem.getUri({
+			path: fileName,
+			directory: Directory.Cache
+		});
+		await FileOpener.open({
+			filePath: uri,
+			contentType: "application/vnd.android.package-archive"
+		});
+		return "opened";
+	}
+	if (cachedBlob) {
+		triggerWebBlobDownload(cachedBlob, fileName);
+		return "opened";
+	}
+	window.open(apkUrl, "_blank");
+	return "opened";
+}
+async function downloadApkWithProgress(apkUrl, fileName, onProgress, onPhaseChange, callbacks) {
 	let blob;
 	try {
 		onPhaseChange?.("downloading");
@@ -55259,6 +55984,7 @@ async function downloadApkWithProgress(apkUrl, fileName, onProgress, onPhaseChan
 			data: base64,
 			directory: Directory.Cache
 		});
+		callbacks?.onNativeFileSaved?.(fileName);
 		const { uri } = await Filesystem.getUri({
 			path: fileName,
 			directory: Directory.Cache
@@ -55269,20 +55995,173 @@ async function downloadApkWithProgress(apkUrl, fileName, onProgress, onPhaseChan
 		});
 		return "native";
 	}
-	const objectUrl = URL.createObjectURL(blob);
-	try {
-		const anchor = document.createElement("a");
-		anchor.href = objectUrl;
-		anchor.download = fileName;
-		document.body.appendChild(anchor);
-		anchor.click();
-		anchor.remove();
-	} finally {
-		window.setTimeout(() => {
-			URL.revokeObjectURL(objectUrl);
-		}, 100);
-	}
+	callbacks?.onBlobCached?.(blob);
+	triggerWebBlobDownload(blob, fileName);
 	return "web";
+}
+// src/lib/downloadManager.ts
+var snapshot = {
+	downloads: {},
+	installErrors: {}
+};
+var listeners = /* @__PURE__ */ new Set();
+var activeDownloadIds = /* @__PURE__ */ new Set();
+var cachedBlobs = /* @__PURE__ */ new Map();
+function emitChange() {
+	listeners.forEach((listener) => listener());
+}
+function updateSnapshot(updater) {
+	snapshot = updater(snapshot);
+	emitChange();
+}
+function subscribeDownloads(listener) {
+	listeners.add(listener);
+	return () => {
+		listeners.delete(listener);
+	};
+}
+function getDownloadsSnapshot() {
+	return snapshot;
+}
+function useApkDownloads() {
+	return (0, import_react.useSyncExternalStore)(subscribeDownloads, getDownloadsSnapshot, getDownloadsSnapshot);
+}
+function getApkFileName(buildId) {
+	return `bosla-app-${buildId.slice(0, 8)}.apk`;
+}
+function startApkDownload(build) {
+	if (!build.apk_url) return;
+	const current = snapshot.downloads[build.id];
+	if (activeDownloadIds.has(build.id) || current?.phase === "downloading" || current?.phase === "installing") return;
+	const fileName = getApkFileName(build.id);
+	activeDownloadIds.add(build.id);
+	updateSnapshot((prev) => {
+		const nextErrors = { ...prev.installErrors };
+		delete nextErrors[build.id];
+		return {
+			downloads: {
+				...prev.downloads,
+				[build.id]: {
+					phase: "downloading",
+					downloadedBytes: 0,
+					totalBytes: null,
+					percent: null,
+					fileName
+				}
+			},
+			installErrors: nextErrors
+		};
+	});
+	let filePersistedLocally = false;
+	downloadApkWithProgress(build.apk_url, fileName, ({ downloadedBytes, totalBytes, percent }) => {
+		updateSnapshot((prev) => {
+			const existing = prev.downloads[build.id];
+			return {
+				...prev,
+				downloads: {
+					...prev.downloads,
+					[build.id]: {
+						phase: existing?.phase === "installing" ? "installing" : "downloading",
+						downloadedBytes,
+						totalBytes,
+						percent,
+						fileName
+					}
+				}
+			};
+		});
+	}, (phase) => {
+		updateSnapshot((prev) => {
+			const existing = prev.downloads[build.id] ?? {
+				downloadedBytes: 0,
+				totalBytes: null,
+				percent: null,
+				fileName
+			};
+			return {
+				...prev,
+				downloads: {
+					...prev.downloads,
+					[build.id]: {
+						...existing,
+						phase
+					}
+				}
+			};
+		});
+	}, {
+		onBlobCached: (blob) => {
+			cachedBlobs.set(build.id, blob);
+			filePersistedLocally = true;
+		},
+		onNativeFileSaved: () => {
+			filePersistedLocally = true;
+		}
+	}).then(() => {
+		updateSnapshot((prev) => {
+			const existing = prev.downloads[build.id] ?? {
+				downloadedBytes: 0,
+				totalBytes: null,
+				percent: 100,
+				fileName
+			};
+			return {
+				...prev,
+				downloads: {
+					...prev.downloads,
+					[build.id]: {
+						...existing,
+						phase: "done",
+						percent: 100,
+						fileName
+					}
+				}
+			};
+		});
+	}).catch(() => {
+		updateSnapshot((prev) => {
+			const nextDownloads = { ...prev.downloads };
+			if (filePersistedLocally && nextDownloads[build.id]) nextDownloads[build.id] = {
+				...nextDownloads[build.id],
+				phase: "done",
+				percent: 100
+			};
+			else delete nextDownloads[build.id];
+			return {
+				downloads: nextDownloads,
+				installErrors: {
+					...prev.installErrors,
+					[build.id]: "تعذّر فتح مثبّت التطبيق — تأكد من صلاحية التثبيت وحاول مجدداً."
+				}
+			};
+		});
+	}).finally(() => {
+		activeDownloadIds.delete(build.id);
+	});
+}
+async function openDownloadedApk(build) {
+	if (!build.apk_url) return;
+	const fileName = snapshot.downloads[build.id]?.fileName ?? getApkFileName(build.id);
+	updateSnapshot((prev) => {
+		if (!prev.installErrors[build.id]) return prev;
+		const nextErrors = { ...prev.installErrors };
+		delete nextErrors[build.id];
+		return {
+			...prev,
+			installErrors: nextErrors
+		};
+	});
+	try {
+		if (await openCachedApkInstaller(fileName, build.apk_url, cachedBlobs.get(build.id)) === "missing_native_cache") startApkDownload(build);
+	} catch {
+		updateSnapshot((prev) => ({
+			...prev,
+			installErrors: {
+				...prev.installErrors,
+				[build.id]: "تعذّر فتح مثبّت التطبيق — تأكد من صلاحية التثبيت وحاول مجدداً."
+			}
+		}));
+	}
 }
 // src/screens/BuildsScreen.tsx
 function formatMegabytes(bytes) {
@@ -55312,17 +56191,10 @@ function BuildsScreen() {
 	const [refreshing, setRefreshing] = (0, import_react.useState)(false);
 	const [error, setError] = (0, import_react.useState)(null);
 	const [emptyImgFailed, setEmptyImgFailed] = (0, import_react.useState)(false);
-	const [downloads, setDownloads] = (0, import_react.useState)({});
-	const [installErrors, setInstallErrors] = (0, import_react.useState)({});
+	const { downloads, installErrors } = useApkDownloads();
 	const scrollRef = (0, import_react.useRef)(null);
 	const touchStartY = (0, import_react.useRef)(null);
 	const [pullOffset, setPullOffset] = (0, import_react.useState)(0);
-	const doneTimersRef = (0, import_react.useRef)({});
-	(0, import_react.useEffect)(() => {
-		return () => {
-			Object.values(doneTimersRef.current).forEach((id) => window.clearTimeout(id));
-		};
-	}, []);
 	const loadBuilds = (0, import_react.useCallback)(async (isRefresh = false) => {
 		if (isRefresh) setRefreshing(true);
 		else setLoading(true);
@@ -55361,90 +56233,8 @@ function BuildsScreen() {
 		touchStartY.current = null;
 		setPullOffset(0);
 	};
-	const handleDownloadApk = async (build) => {
-		if (!build.apk_url) return;
-		const current = downloads[build.id];
-		if (current && (current.phase === "downloading" || current.phase === "installing")) return;
-		if (doneTimersRef.current[build.id]) {
-			window.clearTimeout(doneTimersRef.current[build.id]);
-			delete doneTimersRef.current[build.id];
-		}
-		setInstallErrors((prev) => {
-			if (!prev[build.id]) return prev;
-			const next = { ...prev };
-			delete next[build.id];
-			return next;
-		});
-		setDownloads((prev) => ({
-			...prev,
-			[build.id]: {
-				phase: "downloading",
-				downloadedBytes: 0,
-				totalBytes: null,
-				percent: null
-			}
-		}));
-		const fileName = `bosla-app-${build.id.slice(0, 8)}.apk`;
-		try {
-			if (await downloadApkWithProgress(build.apk_url, fileName, ({ downloadedBytes, totalBytes, percent }) => {
-				setDownloads((prev) => ({
-					...prev,
-					[build.id]: {
-						phase: prev[build.id]?.phase === "installing" ? "installing" : "downloading",
-						downloadedBytes,
-						totalBytes,
-						percent
-					}
-				}));
-			}, (phase) => {
-				setDownloads((prev) => ({
-					...prev,
-					[build.id]: {
-						...prev[build.id] ?? {
-							downloadedBytes: 0,
-							totalBytes: null,
-							percent: null
-						},
-						phase
-					}
-				}));
-			}) === "web") {
-				setDownloads((prev) => ({
-					...prev,
-					[build.id]: {
-						...prev[build.id] ?? {
-							downloadedBytes: 0,
-							totalBytes: null,
-							percent: 100
-						},
-						phase: "done",
-						percent: 100
-					}
-				}));
-				doneTimersRef.current[build.id] = window.setTimeout(() => {
-					setDownloads((prev) => {
-						const next = { ...prev };
-						delete next[build.id];
-						return next;
-					});
-					delete doneTimersRef.current[build.id];
-				}, 2500);
-			} else setDownloads((prev) => {
-				const next = { ...prev };
-				delete next[build.id];
-				return next;
-			});
-		} catch {
-			setDownloads((prev) => {
-				const next = { ...prev };
-				delete next[build.id];
-				return next;
-			});
-			setInstallErrors((prev) => ({
-				...prev,
-				[build.id]: "تعذّر فتح مثبّت التطبيق — تأكد من صلاحية التثبيت وحاول مجدداً."
-			}));
-		}
+	const handleDownloadApk = (build) => {
+		startApkDownload(build);
 	};
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(MobileShell, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", {
 		className: "shrink-0 bg-[#101D35] text-white px-5 py-4 flex items-center justify-between",
@@ -55561,9 +56351,23 @@ function BuildsScreen() {
 						return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 							className: "space-y-2",
 							children: [
-								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+								isDone ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "flex items-center justify-between gap-2 rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-2 text-xs font-bold text-emerald-800",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "flex items-center gap-1.5",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CircleCheck, { className: "w-4 h-4 text-emerald-600 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "تم التنزيل" })]
+									}), dl.totalBytes !== null && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+										className: "text-[11px] font-semibold text-emerald-700 tabular-nums",
+										children: [formatMegabytes(dl.totalBytes), " م.ب"]
+									})]
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 									type: "button",
-									disabled: isDownloading || isInstalling || isDone,
+									onClick: () => openDownloadedApk(b),
+									className: "w-full min-h-[44px] px-3 rounded-xl bg-[#2878E8] hover:bg-[#1E66CC] text-white font-bold text-xs flex items-center justify-center gap-2 transition-colors",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { className: "w-4 h-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "فتح المثبّت" })]
+								})] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+									type: "button",
+									disabled: isDownloading || isInstalling,
 									onClick: () => handleDownloadApk(b),
 									className: "w-full min-h-[44px] px-3 rounded-xl bg-[#2878E8] hover:bg-[#1E66CC] disabled:opacity-80 text-white font-bold text-xs flex items-center justify-center gap-2 transition-colors",
 									children: isDownloading ? dl.totalBytes !== null ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
@@ -55571,7 +56375,7 @@ function BuildsScreen() {
 										children: [
 											"جاري التحميل ",
 											dl.percent ?? 0,
-											"% · ",
+											"% — ",
 											formatMegabytes(dl.downloadedBytes),
 											" / ",
 											formatMegabytes(dl.totalBytes),
@@ -55580,17 +56384,20 @@ function BuildsScreen() {
 									}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-4 h-4 animate-spin shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
 										className: "tabular-nums",
 										children: [
-											"جاري التحميل · ",
+											"جاري التحميل ",
 											formatMegabytes(dl.downloadedBytes),
 											" م.ب"
 										]
-									})] }) : isInstalling ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-4 h-4 animate-spin shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "جاري التثبيت…" })] }) : isDone ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CircleCheck, { className: "w-4 h-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "تم التنزيل" })] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { className: "w-4 h-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "تنزيل APK" })] })
+									})] }) : isInstalling ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-4 h-4 animate-spin shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "جاري التثبيت…" })] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { className: "w-4 h-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "تنزيل APK" })] })
 								}),
 								(isDownloading || isInstalling) && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 									className: "w-full h-1.5 rounded-full bg-slate-100 overflow-hidden",
-									children: isInstalling || dl.totalBytes !== null ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+									children: isInstalling ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 										className: "h-full bg-[#2878E8] transition-all duration-150",
-										style: { width: `${isInstalling ? 100 : dl.percent ?? 0}%` }
+										style: { width: "100%" }
+									}) : dl.totalBytes !== null ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+										className: "h-full bg-[#2878E8] transition-all duration-150",
+										style: { width: `${dl.percent ?? 0}%` }
 									}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-full w-1/2 bg-[#2878E8] rounded-full animate-pulse" })
 								}),
 								installErr && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
@@ -55615,6 +56422,19 @@ function ProfileScreen() {
 	const [passErr, setPassErr] = (0, import_react.useState)();
 	const [savingPass, setSavingPass] = (0, import_react.useState)(false);
 	const [enablingPush, setEnablingPush] = (0, import_react.useState)(false);
+	const [notifStatus, setNotifStatus] = (0, import_react.useState)("prompt");
+	const [notifDenied, setNotifDenied] = (0, import_react.useState)(false);
+	import_react.useEffect(() => {
+		let active = true;
+		getBuildNotificationStatus().then(({ status, rememberedDenied }) => {
+			if (!active) return;
+			setNotifStatus(status);
+			setNotifDenied(rememberedDenied);
+		});
+		return () => {
+			active = false;
+		};
+	}, []);
 	const handlePasswordChange = async (e) => {
 		e.preventDefault();
 		if (newPass.length < 6) {
@@ -55642,9 +56462,11 @@ function ProfileScreen() {
 	const handleEnablePush = async () => {
 		setEnablingPush(true);
 		try {
-			const res = await requestPushPermission();
-			if (res.granted) showToast("تم تفعيل إشعارات التطبيق بنجاح", "success");
-			else showToast(res.reason || "تعذّر تفعيل الإشعارات", "error");
+			const res = await requestAndRegisterBuildNotifications();
+			setNotifStatus(res.status);
+			setNotifDenied(!res.granted && res.supported);
+			if (res.granted) showToast("تم تفعيل إشعارات جاهزية البناء بنجاح", "success");
+			else showToast(res.status === "denied" ? "تم رفض إذن الإشعارات — يمكنك تفعيله من إعدادات التطبيق أو المتصفح" : res.reason || "تعذّر تفعيل الإشعارات", "error");
 		} finally {
 			setEnablingPush(false);
 		}
@@ -55758,14 +56580,20 @@ function ProfileScreen() {
 						type: "button",
 						onClick: handleEnablePush,
 						disabled: enablingPush,
-						className: "w-full min-h-[52px] px-4 flex items-center justify-between hover:bg-slate-50 transition-colors",
+						className: "w-full min-h-[56px] px-4 py-2.5 flex items-center justify-between hover:bg-slate-50 transition-colors text-right",
 						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "flex items-center gap-3",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Bell, { className: "w-4 h-4 text-[#2878E8]" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-								className: "text-sm font-bold text-[#101D35]",
-								children: "تفعيل إشعارات الجاهزية"
+							className: "flex items-center gap-3 min-w-0",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Bell, { className: "w-4 h-4 text-[#2878E8] shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "min-w-0",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+									className: "block text-sm font-bold text-[#101D35]",
+									children: "تفعيل إشعارات الجاهزية"
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+									className: `block text-[11px] mt-0.5 ${notifStatus === "granted" ? "text-emerald-600 font-semibold" : notifDenied ? "text-amber-700 font-semibold" : "text-slate-500"}`,
+									children: notifStatus === "granted" ? "مفعّلة — تصلك تنبيهات اكتمال البناء" : notifDenied ? "مرفوضة — اضغط لإعادة المحاولة أو فعّلها من الإعدادات" : notifStatus === "unsupported" ? "غير مدعومة في هذا المتصفح" : "اضغط للسماح بإشعارات جاهزية التطبيق"
+								})]
 							})]
-						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronLeft, { className: "w-4 h-4 text-slate-400" })]
+						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronLeft, { className: "w-4 h-4 text-slate-400 shrink-0" })]
 					}),
 					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
 						href: "https://boslaacademy.com",
@@ -55900,6 +56728,7 @@ function AdminPanel() {
 		}
 	};
 	const handleAdminLogout = () => {
+		backend.adminLogout();
 		try {
 			sessionStorage.removeItem(ADMIN_SESSION_KEY);
 		} catch {}
@@ -56607,6 +57436,37 @@ function AdminPanel() {
 	});
 }
 // src/App.tsx
+function DeepLinkListener() {
+	const navigate = useNavigate();
+	(0, import_react.useEffect)(() => {
+		if (!Capacitor.isNativePlatform()) return;
+		const handleUrl = (rawUrl) => {
+			if (!rawUrl) return;
+			try {
+				const parsed = new URL(rawUrl);
+				if (parsed.protocol !== "boslaapp:") return;
+				const target = parsed.hostname || parsed.pathname.replace(/^\/+/, "");
+				if (target === "verified" || target === "reset-password") navigate(`/${target}${parsed.search}${parsed.hash}`, { replace: true });
+			} catch {
+				if (rawUrl.startsWith("boslaapp://verified")) {
+					const idx = rawUrl.indexOf("?");
+					navigate(`/verified${idx >= 0 ? rawUrl.slice(idx) : ""}`, { replace: true });
+				} else if (rawUrl.startsWith("boslaapp://reset-password")) {
+					const idx = rawUrl.indexOf("?");
+					navigate(`/reset-password${idx >= 0 ? rawUrl.slice(idx) : ""}`, { replace: true });
+				}
+			}
+		};
+		const listenerPromise = App$1.addListener("appUrlOpen", ({ url }) => {
+			handleUrl(url);
+		});
+		App$1.getLaunchUrl().then((launch) => handleUrl(launch?.url)).catch(() => void 0);
+		return () => {
+			listenerPromise.then((handle) => handle.remove()).catch(() => void 0);
+		};
+	}, [navigate]);
+	return null;
+}
 function ProtectedRoute({ children }) {
 	const { user, unverifiedEmail, loadingAuth } = useApp();
 	if (loadingAuth) return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(MobileShell, {
@@ -56631,7 +57491,7 @@ function ProtectedRoute({ children }) {
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_jsx_runtime.Fragment, { children });
 }
 function App() {
-	return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(AppProvider, { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BrowserRouter, { children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(Routes, { children: [
+	return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(AppProvider, { children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(BrowserRouter, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(DeepLinkListener, {}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(Routes, { children: [
 		/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Route, {
 			path: "/",
 			element: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SplashScreen, {})
@@ -56683,7 +57543,7 @@ function App() {
 				replace: true
 			})
 		})
-	] }) }) });
+	] })] }) });
 }
 // src/main.tsx
 (0, import_client.createRoot)(document.getElementById("root")).render(/* @__PURE__ */ (0, import_jsx_runtime.jsx)(App, {}));

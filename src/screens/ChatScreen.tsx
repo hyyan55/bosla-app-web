@@ -11,12 +11,17 @@ import {
   ImagePlus,
   X,
   RotateCcw,
+  BellOff,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { BoslaLogo } from '../components/BoslaLogo';
 import { MobileShell } from '../components/MobileShell';
 import { backend, uploadAppImage } from '../lib/backend';
 import { trackAppEvent } from '../lib/firebase';
+import {
+  getBuildNotificationStatus,
+  requestAndRegisterBuildNotifications,
+} from '../lib/pushRegistration';
 import { useApp } from '../context/AppContext';
 import type { ChatMessage, EstimatePayload } from '../types';
 
@@ -29,6 +34,7 @@ const SUGGESTIONS = [
 const MAX_CHARS = 2000;
 const MAX_ATTACHED_IMAGES = 5;
 const CHAT_STORAGE_KEY = 'bosla-chat-messages';
+const PENDING_RETRY_STORAGE_KEY = 'bosla-chat-pending-retry';
 
 interface PersistedAttachedImage {
   publicUrl: string;
@@ -52,37 +58,62 @@ interface AttachedImage {
   isObjectUrl?: boolean;
 }
 
+interface PendingChatRetry {
+  userMessageId: string;
+  messageText: string;
+  attempt: number;
+  dueAt: number;
+  history: Array<{ role: 'user' | 'bot'; text: string }>;
+  images: string[];
+  attemptToken: number;
+}
+
 function isHttpUrl(raw: unknown): raw is string {
   return typeof raw === 'string' && /^https?:\/\//i.test(raw.trim());
 }
 
+function createRetryStatusMessage(token: number): LocalChatMessage {
+  return {
+    id: `retry_${token}`,
+    role: 'bot',
+    text: 'الذكاء الاصطناعي مشغول — بحاول تاني…',
+    createdAt: new Date().toISOString(),
+    isRetryStatus: true,
+  };
+}
+
 function syncMessagesToStorage(
   msgs: LocalChatMessage[],
-  atts: AttachedImage[],
+  atts?: AttachedImage[],
 ): void {
   try {
     const latestEstId = [...msgs]
       .reverse()
       .find((m) => m.role === 'bot' && Boolean(m.estimate))?.id;
 
-    const persistedReadyImages: PersistedAttachedImage[] = atts
-      .filter((a) => a.status === 'ready' && isHttpUrl(a.publicUrl))
-      .map((a) => ({
-        publicUrl: a.publicUrl as string,
-        status: 'ready' as const,
-      }));
+    const persistedReadyImages: PersistedAttachedImage[] | null = atts
+      ? atts
+          .filter((a) => a.status === 'ready' && isHttpUrl(a.publicUrl))
+          .map((a) => ({
+            publicUrl: a.publicUrl as string,
+            status: 'ready' as const,
+          }))
+      : null;
 
     const serialized: LocalChatMessage[] = msgs
       .filter((m) => !m.isRetryStatus)
       .map((m) => {
-        const { attachedImages: _ignored, isRetryStatus: _retry, ...rest } = m;
-        if (m.id === latestEstId && persistedReadyImages.length > 0) {
-          return {
-            ...rest,
-            attachedImages: persistedReadyImages,
-          };
+        const { attachedImages, isRetryStatus: _retry, ...rest } = m;
+        if (persistedReadyImages !== null) {
+          if (m.id === latestEstId && persistedReadyImages.length > 0) {
+            return {
+              ...rest,
+              attachedImages: persistedReadyImages,
+            };
+          }
+          return rest;
         }
-        return rest;
+        return attachedImages ? { ...rest, attachedImages } : rest;
       });
 
     localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(serialized));
@@ -102,23 +133,255 @@ function createDefaultMessages(): LocalChatMessage[] {
   ];
 }
 
+function readStoredMessages(): LocalChatMessage[] {
+  try {
+    const saved = localStorage.getItem(CHAT_STORAGE_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed as LocalChatMessage[];
+      }
+    }
+  } catch {
+    // ignore corrupted storage
+  }
+  return createDefaultMessages();
+}
+
+function readPendingRetry(): PendingChatRetry | null {
+  try {
+    const raw = localStorage.getItem(PENDING_RETRY_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PendingChatRetry>;
+    if (
+      typeof parsed.messageText === 'string' &&
+      parsed.messageText.trim() &&
+      typeof parsed.attempt === 'number' &&
+      parsed.attempt >= 2 &&
+      parsed.attempt <= 3 &&
+      typeof parsed.dueAt === 'number' &&
+      Number.isFinite(parsed.dueAt)
+    ) {
+      return {
+        userMessageId: typeof parsed.userMessageId === 'string' ? parsed.userMessageId : '',
+        messageText: parsed.messageText,
+        attempt: parsed.attempt,
+        dueAt: parsed.dueAt,
+        history: Array.isArray(parsed.history) ? parsed.history : [],
+        images: Array.isArray(parsed.images) ? parsed.images : [],
+        attemptToken: typeof parsed.attemptToken === 'number' ? parsed.attemptToken : 0,
+      };
+    }
+  } catch {
+    // ignore corrupted retry state
+  }
+  return null;
+}
+
+function writePendingRetry(pending: PendingChatRetry | null): void {
+  try {
+    if (pending) {
+      localStorage.setItem(PENDING_RETRY_STORAGE_KEY, JSON.stringify(pending));
+    } else {
+      localStorage.removeItem(PENDING_RETRY_STORAGE_KEY);
+    }
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+// Module-level retry state so tab switches never cancel scheduled retries or invalidate in-flight replies
+let activeRetryTimerId: number | null = null;
+let activeAttemptToken = 0;
+let activeInFlightUserMsgId: string | null = null;
+
+type ChatSyncEvent =
+  | { type: 'attempt_started'; userMessageId: string }
+  | {
+      type: 'messages_updated';
+      messages: LocalChatMessage[];
+      clearInput?: boolean;
+      markAttachmentsSent?: boolean;
+    }
+  | { type: 'retry_scheduled'; messages: LocalChatMessage[] };
+
+const chatListeners = new Set<(event: ChatSyncEvent) => void>();
+
+function emitChatEvent(event: ChatSyncEvent): void {
+  chatListeners.forEach((fn) => fn(event));
+}
+
+function cancelActiveRetry(): void {
+  if (activeRetryTimerId !== null) {
+    window.clearTimeout(activeRetryTimerId);
+    activeRetryTimerId = null;
+  }
+  activeAttemptToken += 1;
+  activeInFlightUserMsgId = null;
+  writePendingRetry(null);
+}
+
+function scheduleModuleRetry(pending: PendingChatRetry, delayMs: number): void {
+  if (activeRetryTimerId !== null) {
+    window.clearTimeout(activeRetryTimerId);
+  }
+  writePendingRetry(pending);
+  activeRetryTimerId = window.setTimeout(() => {
+    activeRetryTimerId = null;
+    void executeChatAttempt({
+      attemptToken: pending.attemptToken,
+      attempt: pending.attempt,
+      userMessageId: pending.userMessageId,
+      messageText: pending.messageText,
+      history: pending.history,
+      images: pending.images,
+    });
+  }, Math.max(0, delayMs));
+}
+
+async function executeChatAttempt(params: {
+  attemptToken: number;
+  attempt: number;
+  userMessageId: string;
+  messageText: string;
+  history: Array<{ role: 'user' | 'bot'; text: string }>;
+  images: string[];
+}): Promise<void> {
+  const { attemptToken, attempt, userMessageId, messageText, history, images } = params;
+  if (activeAttemptToken !== attemptToken) return;
+
+  activeInFlightUserMsgId = userMessageId;
+  emitChatEvent({ type: 'attempt_started', userMessageId });
+
+  let succeeded = false;
+  let botReply: { reply: string; estimate?: EstimatePayload } | null = null;
+  let failureMessage = 'تعذّر الوصول للذكاء الاصطناعي — حاول لاحقاً';
+  let timeoutHandle: number | undefined;
+
+  try {
+    const res = await Promise.race([
+      backend.sendChatMessage({
+        history,
+        message: messageText.slice(0, MAX_CHARS),
+        images,
+      }),
+      new Promise<{ ok: false; message: string }>((resolve) => {
+        timeoutHandle = window.setTimeout(
+          () =>
+            resolve({
+              ok: false,
+              message: 'استغرق الاتصال بالذكاء الاصطناعي وقتاً طويلاً — حاول لاحقاً',
+            }),
+          62000,
+        );
+      }),
+    ]);
+
+    if (res.ok) {
+      succeeded = true;
+      botReply = { reply: res.reply, estimate: res.estimate };
+    } else if (res.message) {
+      failureMessage = res.message;
+    }
+  } catch {
+    succeeded = false;
+  } finally {
+    if (timeoutHandle !== undefined) {
+      window.clearTimeout(timeoutHandle);
+    }
+  }
+
+  if (activeAttemptToken !== attemptToken) return;
+  activeInFlightUserMsgId = null;
+
+  const baseMessages = readStoredMessages().filter((m) => !m.isRetryStatus);
+
+  if (succeeded && botReply) {
+    writePendingRetry(null);
+    const botMsg: LocalChatMessage = {
+      id: `b_${Date.now()}`,
+      role: 'bot',
+      text: botReply.reply,
+      createdAt: new Date().toISOString(),
+      estimate: botReply.estimate,
+      promptDescription: messageText,
+    };
+    const nextMsgs = [...baseMessages, botMsg];
+    const restoredAtts: AttachedImage[] | undefined =
+      images.length > 0 && botReply.estimate
+        ? images.map((url, idx) => ({
+            id: `sent_${botMsg.id}_${idx}`,
+            previewUrl: url,
+            publicUrl: url,
+            status: 'ready' as const,
+            index: idx,
+            isObjectUrl: false,
+          }))
+        : undefined;
+    syncMessagesToStorage(nextMsgs, restoredAtts);
+    emitChatEvent({
+      type: 'messages_updated',
+      messages: nextMsgs,
+      clearInput: true,
+      markAttachmentsSent: images.length > 0,
+    });
+    return;
+  }
+
+  if (attempt < 3) {
+    const nextAttempt = attempt + 1;
+    const delayMs = attempt === 1 ? 30000 : 60000;
+    const pending: PendingChatRetry = {
+      userMessageId,
+      messageText,
+      attempt: nextAttempt,
+      dueAt: Date.now() + delayMs,
+      history,
+      images,
+      attemptToken,
+    };
+    scheduleModuleRetry(pending, delayMs);
+    const withRetryBubble: LocalChatMessage[] = [
+      ...baseMessages,
+      createRetryStatusMessage(attemptToken),
+    ];
+    emitChatEvent({ type: 'retry_scheduled', messages: withRetryBubble });
+    return;
+  }
+
+  writePendingRetry(null);
+  const errMsg: LocalChatMessage = {
+    id: `err_${Date.now()}`,
+    role: 'bot',
+    text: failureMessage,
+    createdAt: new Date().toISOString(),
+    isError: true,
+  };
+  const nextMsgs = [...baseMessages, errMsg];
+  syncMessagesToStorage(nextMsgs);
+  emitChatEvent({
+    type: 'messages_updated',
+    messages: nextMsgs,
+  });
+}
+
 export function ChatScreen() {
   const { user, settings, refreshProfile, showToast } = useApp();
   const navigate = useNavigate();
 
   const [messages, setMessages] = useState<LocalChatMessage[]>(() => {
-    try {
-      const saved = localStorage.getItem(CHAT_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed as LocalChatMessage[];
-        }
-      }
-    } catch {
-      // ignore corrupted storage
+    const stored = readStoredMessages();
+    const lastNonRetry = [...stored].reverse().find((m) => !m.isRetryStatus);
+    const pending = readPendingRetry();
+    if (
+      pending &&
+      lastNonRetry?.role === 'user' &&
+      (pending.userMessageId === lastNonRetry.id || pending.messageText === lastNonRetry.text) &&
+      activeInFlightUserMsgId !== lastNonRetry.id
+    ) {
+      return [...stored, createRetryStatusMessage(pending.attemptToken || activeAttemptToken)];
     }
-    return createDefaultMessages();
+    return stored;
   });
   const [hasInteracted, setHasInteracted] = useState(() =>
     messages.some((m) => m.role === 'user'),
@@ -151,22 +414,35 @@ export function ChatScreen() {
       ),
     );
   });
-  const [thinking, setThinking] = useState(false);
-  const [isWaitingRetry, setIsWaitingRetry] = useState(false);
+  const [thinking, setThinking] = useState(() => {
+    const stored = readStoredMessages();
+    const lastMsg = stored[stored.length - 1];
+    return Boolean(lastMsg?.role === 'user' && activeInFlightUserMsgId === lastMsg.id);
+  });
+  const [isWaitingRetry, setIsWaitingRetry] = useState(() => {
+    const stored = readStoredMessages();
+    const lastMsg = stored[stored.length - 1];
+    const pending = readPendingRetry();
+    return Boolean(
+      pending &&
+        lastMsg?.role === 'user' &&
+        (pending.userMessageId === lastMsg.id || pending.messageText === lastMsg.text) &&
+        activeInFlightUserMsgId !== lastMsg.id,
+    );
+  });
   const [thinkingStep, setThinkingStep] = useState<'analyzing' | 'estimating'>('analyzing');
   const [buildingId, setBuildingId] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(
     typeof navigator !== 'undefined' ? navigator.onLine : true,
   );
   const [supabaseNoticeMsgId, setSupabaseNoticeMsgId] = useState<string | null>(null);
+  const [notifDeniedBanner, setNotifDeniedBanner] = useState(false);
 
   const listEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const uploadCounterRef = useRef(0);
   const attachmentsRef = useRef<AttachedImage[]>([]);
   const messagesRef = useRef<LocalChatMessage[]>(messages);
-  const retryTimerRef = useRef<number | null>(null);
-  const retryAttemptTokenRef = useRef(0);
 
   messagesRef.current = messages;
 
@@ -179,12 +455,105 @@ export function ChatScreen() {
   }, [attachments]);
 
   useEffect(() => {
-    return () => {
-      if (retryTimerRef.current !== null) {
-        window.clearTimeout(retryTimerRef.current);
-        retryTimerRef.current = null;
+    let active = true;
+    void getBuildNotificationStatus().then(({ status, rememberedDenied }) => {
+      if (!active) return;
+      if (status === 'granted') {
+        setNotifDeniedBanner(false);
+      } else if (rememberedDenied) {
+        setNotifDeniedBanner(true);
       }
-      retryAttemptTokenRef.current += 1;
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const listener = (event: ChatSyncEvent) => {
+      if (event.type === 'attempt_started') {
+        setThinking(true);
+        setIsWaitingRetry(false);
+        setMessages((prev) => prev.filter((m) => !m.isRetryStatus));
+        return;
+      }
+      if (event.type === 'retry_scheduled') {
+        setMessages(event.messages);
+        setThinking(false);
+        setIsWaitingRetry(true);
+        return;
+      }
+      if (event.type === 'messages_updated') {
+        setMessages(event.messages);
+        setThinking(false);
+        setIsWaitingRetry(false);
+        if (event.clearInput) setInput('');
+        if (event.markAttachmentsSent) setAttachmentsSent(true);
+      }
+    };
+    chatListeners.add(listener);
+
+    // Check pending retry or unanswered latest user message on mount
+    const stored = readStoredMessages();
+    const lastNonRetry = [...stored].reverse().find((m) => !m.isRetryStatus);
+    const pending = readPendingRetry();
+
+    if (
+      lastNonRetry?.role === 'user' &&
+      pending &&
+      (pending.userMessageId === lastNonRetry.id || pending.messageText === lastNonRetry.text)
+    ) {
+      if (activeInFlightUserMsgId === lastNonRetry.id) {
+        setThinking(true);
+        setIsWaitingRetry(false);
+      } else {
+        setIsWaitingRetry(true);
+        setThinking(false);
+        setMessages((prev) =>
+          prev.some((m) => m.isRetryStatus)
+            ? prev
+            : [...stored, createRetryStatusMessage(pending.attemptToken || activeAttemptToken)],
+        );
+
+        // Resume scheduled retry if page reloaded (so module timer isn't running yet)
+        if (activeRetryTimerId === null) {
+          const resumedToken = Math.max(activeAttemptToken + 1, pending.attemptToken + 1);
+          activeAttemptToken = resumedToken;
+          const resumedPending: PendingChatRetry = {
+            ...pending,
+            userMessageId: lastNonRetry.id,
+            attemptToken: resumedToken,
+          };
+          const remainingMs = Math.max(0, pending.dueAt - Date.now());
+          scheduleModuleRetry(resumedPending, remainingMs);
+        }
+      }
+    } else if (lastNonRetry?.role === 'user' && activeInFlightUserMsgId !== lastNonRetry.id) {
+      // Unanswered user message at end of stored chat -> resume sending automatically
+      writePendingRetry(null);
+      const token = ++activeAttemptToken;
+      const history = stored
+        .filter((m) => m.id !== 'welcome' && !m.isError && !m.isRetryStatus)
+        .map((m) => ({ role: m.role, text: m.text }));
+      setThinking(true);
+      setIsWaitingRetry(false);
+      void executeChatAttempt({
+        attemptToken: token,
+        attempt: 1,
+        userMessageId: lastNonRetry.id,
+        messageText: lastNonRetry.text,
+        history,
+        images: lastNonRetry.images || [],
+      });
+    }
+
+    return () => {
+      chatListeners.delete(listener);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
       attachmentsRef.current.forEach((item) => {
         if (item.isObjectUrl) {
           URL.revokeObjectURL(item.previewUrl);
@@ -333,20 +702,18 @@ export function ChatScreen() {
     const text = rawText.trim();
     if (!text) return;
 
-    let cancelledPendingRetry = false;
-    if (retryTimerRef.current !== null) {
-      window.clearTimeout(retryTimerRef.current);
-      retryTimerRef.current = null;
-      retryAttemptTokenRef.current += 1;
+    const hadPendingRetry =
+      activeRetryTimerId !== null || readPendingRetry() !== null || isWaitingRetry;
+    if (hadPendingRetry) {
+      cancelActiveRetry();
       setIsWaitingRetry(false);
-      cancelledPendingRetry = true;
       setMessages((prev) => prev.filter((m) => !m.isRetryStatus));
     }
 
-    if (thinking && !cancelledPendingRetry) return;
+    if ((thinking || activeInFlightUserMsgId !== null) && !hadPendingRetry) return;
 
     if (attachments.some((a) => a.status === 'uploading')) {
-      if (cancelledPendingRetry) {
+      if (hadPendingRetry) {
         setThinking(false);
       }
       showToast('انتظر اكتمال رفع الصور', 'info');
@@ -372,115 +739,40 @@ export function ChatScreen() {
       ...messagesRef.current.filter((m) => !m.isRetryStatus),
       userMsg,
     ];
+    syncMessagesToStorage(nextHistory, attachments);
     setMessages(nextHistory);
     setThinking(true);
     trackAppEvent('chat_prompt_sent', { length: text.length });
 
-    const attemptToken = ++retryAttemptTokenRef.current;
+    const attemptToken = ++activeAttemptToken;
+    const historyPayload = nextHistory
+      .filter((m) => m.id !== 'welcome' && !m.isError && !m.isRetryStatus)
+      .map((m) => ({ role: m.role, text: m.text }));
 
-    const runAttempt = async (attempt: number) => {
-      if (retryAttemptTokenRef.current !== attemptToken) return;
-      setIsWaitingRetry(false);
-      setThinking(true);
+    await executeChatAttempt({
+      attemptToken,
+      attempt: 1,
+      userMessageId: userMsg.id,
+      messageText: text,
+      history: historyPayload,
+      images: readyImages,
+    });
+  };
 
-      let succeeded = false;
-      let botReply: { reply: string; estimate?: EstimatePayload } | null = null;
-      let failureMessage = 'تعذّر الوصول للذكاء الاصطناعي — حاول لاحقاً';
-      let timeoutHandle: number | undefined;
-
-      try {
-        const res = await Promise.race([
-          backend.sendChatMessage({
-            history: nextHistory
-              .filter((m) => m.id !== 'welcome' && !m.isError && !m.isRetryStatus)
-              .map((m) => ({ role: m.role, text: m.text })),
-            message: text.slice(0, MAX_CHARS),
-            images: readyImages,
-          }),
-          new Promise<{ ok: false; message: string }>((resolve) => {
-            timeoutHandle = window.setTimeout(
-              () =>
-                resolve({
-                  ok: false,
-                  message: 'استغرق الاتصال بالذكاء الاصطناعي وقتاً طويلاً — حاول لاحقاً',
-                }),
-              62000,
-            );
-          }),
-        ]);
-
-        if (res.ok) {
-          succeeded = true;
-          botReply = { reply: res.reply, estimate: res.estimate };
-        } else if (res.message) {
-          failureMessage = res.message;
-        }
-      } catch {
-        succeeded = false;
-      } finally {
-        if (timeoutHandle !== undefined) {
-          window.clearTimeout(timeoutHandle);
-        }
-      }
-
-      if (retryAttemptTokenRef.current !== attemptToken) return;
-
-      if (succeeded && botReply) {
-        if (readyImages.length > 0) {
-          setAttachmentsSent(true);
-        }
-
-        const botMsg: LocalChatMessage = {
-          id: `b_${Date.now()}`,
-          role: 'bot',
-          text: botReply.reply,
-          createdAt: new Date().toISOString(),
-          estimate: botReply.estimate,
-          promptDescription: text,
-        };
-        setMessages((prev) => [...prev.filter((m) => !m.isRetryStatus), botMsg]);
-        setInput('');
-        setThinking(false);
-        setIsWaitingRetry(false);
-        return;
-      }
-
-      if (attempt < 3) {
-        setThinking(false);
-        setMessages((prev) => [
-          ...prev.filter((m) => !m.isRetryStatus),
-          {
-            id: `retry_${attemptToken}`,
-            role: 'bot',
-            text: 'الذكاء الاصطناعي مشغول — بحاول تاني…',
-            createdAt: new Date().toISOString(),
-            isRetryStatus: true,
-          },
-        ]);
-        setIsWaitingRetry(true);
-        const delayMs = attempt === 1 ? 30000 : 60000;
-        retryTimerRef.current = window.setTimeout(() => {
-          retryTimerRef.current = null;
-          void runAttempt(attempt + 1);
-        }, delayMs);
-        return;
-      }
-
-      setMessages((prev) => [
-        ...prev.filter((m) => !m.isRetryStatus),
-        {
-          id: `err_${Date.now()}`,
-          role: 'bot',
-          text: failureMessage,
-          createdAt: new Date().toISOString(),
-          isError: true,
-        },
-      ]);
-      setThinking(false);
-      setIsWaitingRetry(false);
-    };
-
-    await runAttempt(1);
+  const handleEnableNotificationsInline = async () => {
+    const res = await requestAndRegisterBuildNotifications();
+    if (res.granted) {
+      setNotifDeniedBanner(false);
+      showToast('تم تفعيل إشعارات جاهزية التطبيق بنجاح', 'success');
+    } else {
+      setNotifDeniedBanner(res.supported);
+      showToast(
+        res.status === 'denied'
+          ? 'تم رفض الإذن — يمكنك تفعيل الإشعارات لاحقاً من الإعدادات أو شاشة حسابي'
+          : res.reason || 'تعذّر تفعيل الإشعارات',
+        'info',
+      );
+    }
   };
 
   const handleBuildApp = async (msgId: string, description: string, estimate: EstimatePayload) => {
@@ -504,6 +796,14 @@ export function ChatScreen() {
 
     setBuildingId(msgId);
     try {
+      const notifRes = await requestAndRegisterBuildNotifications();
+      if (!notifRes.granted && notifRes.supported) {
+        setNotifDeniedBanner(true);
+        showToast('تم رفض إذن الإشعارات — سيستمر بناء التطبيق ويمكنك تفعيلها لاحقاً', 'info');
+      } else if (notifRes.granted) {
+        setNotifDeniedBanner(false);
+      }
+
       const res = await backend.startBuild({
         description,
         complexity: estimate.complexity,
@@ -802,6 +1102,44 @@ export function ChatScreen() {
 
         <div ref={listEndRef} />
       </div>
+
+      {/* Notification Denied In-Page Status Banner */}
+      {notifDeniedBanner && (
+        <div className="shrink-0 bg-[#FFF9EB] border-t border-[#D5B45C]/40 px-3.5 py-2.5 flex items-center justify-between gap-2 text-[11px] text-[#7B5D12]">
+          <div className="flex items-start gap-2 min-w-0">
+            <BellOff className="w-4 h-4 text-[#B8922E] shrink-0 mt-0.5" />
+            <div className="min-w-0 space-y-1">
+              <p className="font-bold leading-snug">
+                تم رفض إذن الإشعارات — سيستمر بناء تطبيقك بشكل طبيعي، ولن تصلك إشعارات الجاهزية تلقائياً.
+              </p>
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleEnableNotificationsInline}
+                  className="font-extrabold text-[#2878E8] underline"
+                >
+                  إعادة السؤال عن الإذن
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigate('/profile')}
+                  className="font-bold text-[#101D35] underline"
+                >
+                  تفعيلها من حسابي
+                </button>
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setNotifDeniedBanner(false)}
+            aria-label="إغلاق التنبيه"
+            className="p-1 text-[#7B5D12] hover:text-[#101D35] shrink-0"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Chat Composer */}
       <form
