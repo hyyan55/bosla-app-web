@@ -100,6 +100,7 @@ export function ChatScreen() {
   }, [messages]);
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<AttachedImage[]>([]);
+  const [attachmentsSent, setAttachmentsSent] = useState(false);
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [imageUrlError, setImageUrlError] = useState<string | null>(null);
   const [thinking, setThinking] = useState(false);
@@ -178,7 +179,11 @@ export function ChatScreen() {
     e.target.value = '';
     if (selected.length === 0) return;
 
-    const remaining = MAX_ATTACHED_IMAGES - attachments.length;
+    const shouldReplace = attachmentsSent;
+    const remaining = shouldReplace
+      ? MAX_ATTACHED_IMAGES
+      : MAX_ATTACHED_IMAGES - attachments.length;
+
     if (remaining <= 0) {
       showToast('الحد الأقصى 5 صور مرفقة في المحادثة', 'info');
       return;
@@ -190,7 +195,7 @@ export function ChatScreen() {
       showToast('الحد الأقصى 5 صور مرفقة — تم اختيار ما يتسع فقط', 'info');
     }
 
-    const baseIndex = attachments.length;
+    const baseIndex = shouldReplace ? 0 : attachments.length;
     const newItems: AttachedImage[] = accepted.map((file, i) => ({
       id: `att_${Date.now()}_${uploadCounterRef.current++}`,
       previewUrl: URL.createObjectURL(file),
@@ -200,7 +205,20 @@ export function ChatScreen() {
       isObjectUrl: true,
     }));
 
-    setAttachments((prev) => [...prev, ...newItems]);
+    if (shouldReplace) {
+      setAttachments((prev) => {
+        prev.forEach((item) => {
+          if (item.isObjectUrl) {
+            URL.revokeObjectURL(item.previewUrl);
+          }
+        });
+        return newItems;
+      });
+      setAttachmentsSent(false);
+    } else {
+      setAttachments((prev) => [...prev, ...newItems]);
+    }
+
     newItems.forEach((item) => {
       if (item.file) {
         void startFileUpload(item.id, item.file, item.index);
@@ -226,7 +244,11 @@ export function ChatScreen() {
       if (target?.isObjectUrl) {
         URL.revokeObjectURL(target.previewUrl);
       }
-      return prev.filter((item) => item.id !== id);
+      const next = prev.filter((item) => item.id !== id);
+      if (next.length === 0) {
+        setAttachmentsSent(false);
+      }
+      return next;
     });
   };
 
@@ -239,6 +261,7 @@ export function ChatScreen() {
       });
       return [];
     });
+    setAttachmentsSent(false);
     setImageUrlInput('');
     setImageUrlError(null);
   };
@@ -252,24 +275,47 @@ export function ChatScreen() {
       return;
     }
 
-    if (attachments.length >= MAX_ATTACHED_IMAGES) {
+    const shouldReplace = attachmentsSent;
+    if (!shouldReplace && attachments.length >= MAX_ATTACHED_IMAGES) {
       showToast('الحد الأقصى 5 صور مرفقة في المحادثة', 'info');
       return;
     }
 
     setImageUrlError(null);
     setImageUrlInput('');
-    setAttachments((prev) => [
-      ...prev,
-      {
-        id: `url_${Date.now()}_${uploadCounterRef.current++}`,
-        previewUrl: trimmed,
-        publicUrl: trimmed,
-        status: 'ready',
-        index: prev.length,
-        isObjectUrl: false,
-      },
-    ]);
+
+    if (shouldReplace) {
+      setAttachments((prev) => {
+        prev.forEach((item) => {
+          if (item.isObjectUrl) {
+            URL.revokeObjectURL(item.previewUrl);
+          }
+        });
+        return [
+          {
+            id: `url_${Date.now()}_${uploadCounterRef.current++}`,
+            previewUrl: trimmed,
+            publicUrl: trimmed,
+            status: 'ready',
+            index: 0,
+            isObjectUrl: false,
+          },
+        ];
+      });
+      setAttachmentsSent(false);
+    } else {
+      setAttachments((prev) => [
+        ...prev,
+        {
+          id: `url_${Date.now()}_${uploadCounterRef.current++}`,
+          previewUrl: trimmed,
+          publicUrl: trimmed,
+          status: 'ready',
+          index: prev.length,
+          isObjectUrl: false,
+        },
+      ]);
+    }
   };
 
   const sendMessage = async (rawText: string) => {
@@ -325,7 +371,9 @@ export function ChatScreen() {
         return;
       }
 
-      clearAttachments();
+      if (readyImages.length > 0) {
+        setAttachmentsSent(true);
+      }
 
       const botMsg: LocalChatMessage = {
         id: `b_${Date.now()}`,
@@ -389,6 +437,7 @@ export function ChatScreen() {
         return;
       }
 
+      clearAttachments();
       await refreshProfile();
       trackAppEvent('build_started', { complexity: estimate.complexity, points: estimate.points });
       showToast('تم خصم النقاط وبدء بناء تطبيقك!', 'success');
@@ -402,6 +451,13 @@ export function ChatScreen() {
     e.preventDefault();
     sendMessage(input);
   };
+
+  const readyAttachments = attachments.filter(
+    (a) => a.status === 'ready' && Boolean(a.publicUrl),
+  );
+  const latestEstimateMsgId = [...messages]
+    .reverse()
+    .find((m) => m.role === 'bot' && Boolean(m.estimate))?.id;
 
   return (
     <MobileShell>
@@ -536,6 +592,36 @@ export function ChatScreen() {
                           </p>
                         )}
 
+                        {msg.id === latestEstimateMsgId && readyAttachments.length > 0 && (
+                          <div className="space-y-2 pt-1">
+                            <p className="text-xs font-bold text-[#101D35]">
+                              الصور المرفقة في البناء
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              {readyAttachments.map((att) => (
+                                <div
+                                  key={`est_${att.id}`}
+                                  className="relative w-14 h-14 rounded-xl overflow-hidden border border-slate-200 bg-slate-100 shrink-0"
+                                >
+                                  <img
+                                    src={att.previewUrl || att.publicUrl}
+                                    alt="صورة مرفقة في البناء"
+                                    className="w-full h-full object-cover"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveAttachment(att.id)}
+                                    aria-label="إزالة الصورة"
+                                    className="absolute top-1 left-1 w-5 h-5 rounded-full bg-[#101D35]/85 hover:bg-[#101D35] text-white flex items-center justify-center transition-colors"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
                         {supabaseNoticeMsgId === msg.id && (
                           <div className="rounded-xl bg-[#FFF9EB] border border-[#D5B45C]/50 px-3 py-2.5 text-xs font-semibold text-[#7B5D12]">
                             البناء الحقيقي يحتاج ربط Supabase (أضف مفاتيح المشروع في ملف .env لتشغيل خط بناء APK).
@@ -645,7 +731,7 @@ export function ChatScreen() {
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            disabled={thinking || attachments.length >= MAX_ATTACHED_IMAGES}
+            disabled={thinking || (!attachmentsSent && attachments.length >= MAX_ATTACHED_IMAGES)}
             aria-label="إرفاق صورة"
             className="min-w-[46px] min-h-[46px] rounded-xl border border-slate-300 bg-[#F8FAFC] hover:bg-slate-100 disabled:opacity-50 text-[#101D35] flex items-center justify-center transition-colors shrink-0"
           >
@@ -755,7 +841,7 @@ export function ChatScreen() {
             <button
               type="button"
               onClick={handleAddImageUrl}
-              disabled={!imageUrlInput.trim() || thinking || attachments.length >= MAX_ATTACHED_IMAGES}
+              disabled={!imageUrlInput.trim() || thinking || (!attachmentsSent && attachments.length >= MAX_ATTACHED_IMAGES)}
               aria-label="إضافة رابط صورة"
               className="h-9 px-2.5 rounded-lg border border-slate-200 bg-[#F8FAFC] hover:bg-slate-100 disabled:opacity-50 text-[#101D35] text-xs font-bold flex items-center gap-1 transition-colors shrink-0"
             >
