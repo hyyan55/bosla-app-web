@@ -22,10 +22,11 @@ export const isSupabaseConfigured =
 
 export const isDemoMode = !isSupabaseConfigured;
 
-// Generous timeout fetch for slow 4G networks (60s for Edge Functions, 30s otherwise)
+// Generous timeout fetch for slow 4G networks (150s for Edge Functions —
+// code generation alone can take ~2 minutes — 30s otherwise)
 async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-  const timeoutMs = urlStr.includes('/functions/v1/') ? 60000 : 30000;
+  const timeoutMs = urlStr.includes('/functions/v1/') ? 150000 : 30000;
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
@@ -1278,6 +1279,7 @@ export const backend = {
 
     const attachedImages = params.images ?? images ?? [];
 
+    const startedAt = Date.now();
     return withSessionRetry(async () => {
       const { data, error } = await supabase.functions.invoke('start-build', {
         body: {
@@ -1314,6 +1316,12 @@ export const backend = {
             insufficientPoints: true,
             message: 'رصيد نقاطك غير كافٍ — اشحن محفظتك أولاً',
           };
+        }
+        // إن انتظرنا المهلة كاملة ثم فشل الطلب، فالسيرفر غالباً ما زال يعمل —
+        // نرمِ الخطأ ليتولى ChatScreen البحث عن البناء الذي بدأ فعلاً
+        // (findJustStartedBuild) بدل عرض رسالة «تعذّر» الكاذبة.
+        if (Date.now() - startedAt >= 140000) {
+          throw new Error('start_build_timeout');
         }
         return { ok: false, message: 'تعذّر بدء البناء حالياً — حاول لاحقاً' };
       }

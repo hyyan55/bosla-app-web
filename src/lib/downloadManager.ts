@@ -3,6 +3,7 @@ import {
   DOWNLOAD_FAILED_MESSAGE,
   INSTALL_PERMISSION_MESSAGE,
   downloadApkWithProgress,
+  openApkDownloadInBrowser,
   openCachedApkInstaller,
 } from './downloadApk';
 import type { AppBuild } from '../types';
@@ -196,6 +197,12 @@ export function startApkDownload(build: AppBuild): void {
     .finally(() => {
       activeDownloadIds.delete(build.id);
     });
+}
+
+/** يفتح رابط APK في متصفح النظام كبديل عند فشل تنزيل DownloadManager. */
+export function openApkInBrowser(build: AppBuild): void {
+  if (!build.apk_url) return;
+  openApkDownloadInBrowser(build.apk_url);
 }
 
 export async function openDownloadedApk(build: AppBuild): Promise<void> {

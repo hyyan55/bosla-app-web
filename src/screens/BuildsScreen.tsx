@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Download,
+  ExternalLink,
   RefreshCw,
   Clock,
   CheckCircle2,
@@ -13,7 +14,7 @@ import {
 import { MobileShell } from '../components/MobileShell';
 import { backend, COMPLEXITY_LABELS } from '../lib/backend';
 import { subscribeBuildWatcher, watchBuildingBuilds } from '../lib/buildWatcher';
-import { openDownloadedApk, startApkDownload, useApkDownloads } from '../lib/downloadManager';
+import { openApkInBrowser, openDownloadedApk, startApkDownload, useApkDownloads } from '../lib/downloadManager';
 import type { AppBuild, BuildStatus } from '../types';
 
 function formatMegabytes(bytes: number): string {
@@ -335,15 +336,25 @@ export function BuildsScreen() {
                       {installErr && (
                         <div className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 space-y-2">
                           <p className="text-xs text-red-700 leading-relaxed">{installErr}</p>
-                          <button
-                            type="button"
-                            disabled={isBusy}
-                            onClick={() => startApkDownload(b)}
-                            className="min-h-[36px] px-3 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold text-xs inline-flex items-center gap-1.5 transition-colors"
-                          >
-                            <RefreshCw className="w-3.5 h-3.5 shrink-0" />
-                            <span>إعادة المحاولة</span>
-                          </button>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              disabled={isBusy}
+                              onClick={() => startApkDownload(b)}
+                              className="min-h-[36px] px-3 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold text-xs inline-flex items-center gap-1.5 transition-colors"
+                            >
+                              <RefreshCw className="w-3.5 h-3.5 shrink-0" />
+                              <span>إعادة المحاولة</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openApkInBrowser(b)}
+                              className="min-h-[36px] px-3 rounded-lg bg-white border border-red-300 hover:bg-red-100 text-red-700 font-bold text-xs inline-flex items-center gap-1.5 transition-colors"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                              <span>فتح الرابط في المتصفح</span>
+                            </button>
+                          </div>
                         </div>
                       )}
                     </div>

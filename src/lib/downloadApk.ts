@@ -56,7 +56,17 @@ const DOWNLOAD_MANAGER_REASON_MESSAGES: Record<number, string> = {
 };
 
 function mapDownloadManagerReason(reason: number): string {
-  return DOWNLOAD_MANAGER_REASON_MESSAGES[reason] ?? DOWNLOAD_FAILED_MESSAGE;
+  const base = DOWNLOAD_MANAGER_REASON_MESSAGES[reason] ?? DOWNLOAD_FAILED_MESSAGE;
+  return `${base} (كود: ${reason})`;
+}
+
+/**
+ * يفتح رابط APK في متصفح النظام كبديل عند فشل تنزيل DownloadManager.
+ * يستخدم '_system' فيفتح المتصفح الخارجي مباشرة دون أي إضافة جديدة،
+ * ومنه ينزّل المستخدم الملف ويثبّته يدوياً.
+ */
+export function openApkDownloadInBrowser(apkUrl: string): void {
+  window.open(apkUrl, '_system');
 }
 
 // إن بقي التنزيل متوقفاً (paused) هذه المدة دون أي تقدم، نعتبره فشلاً
@@ -115,7 +125,7 @@ export async function downloadApkWithProgress(
     const started = await BoslaDownloader.startDownload({ url: apkUrl, fileName });
     downloadId = String(started.downloadId);
   } catch {
-    throw new Error(DOWNLOAD_FAILED_MESSAGE);
+    throw new Error(`${DOWNLOAD_FAILED_MESSAGE} (كود: start)`);
   }
 
   // استطلاع حالة التنزيل كل 500ms حتى النجاح أو الفشل — DownloadManager نفسه
@@ -128,7 +138,7 @@ export async function downloadApkWithProgress(
           if (s.status === 'successful') {
             window.clearInterval(timer);
             if (s.downloadedBytes <= 0) {
-              reject(new Error(DOWNLOAD_FAILED_MESSAGE));
+              reject(new Error(`${DOWNLOAD_FAILED_MESSAGE} (كود: empty)`));
             } else {
               resolve(s.downloadedBytes);
             }
@@ -137,14 +147,14 @@ export async function downloadApkWithProgress(
             reject(new Error(mapDownloadManagerReason(s.reason)));
           } else if (s.status === 'not_found') {
             window.clearInterval(timer);
-            reject(new Error(DOWNLOAD_FAILED_MESSAGE));
+            reject(new Error(`${DOWNLOAD_FAILED_MESSAGE} (كود: not_found)`));
           } else {
             if (s.status === 'paused') {
               if (pausedSince === null) {
                 pausedSince = Date.now();
               } else if (Date.now() - pausedSince > PAUSED_STALL_TIMEOUT_MS) {
                 window.clearInterval(timer);
-                reject(new Error(DOWNLOAD_STALLED_MESSAGE));
+                reject(new Error(`${DOWNLOAD_STALLED_MESSAGE} (كود: stalled)`));
                 return;
               }
             } else {
