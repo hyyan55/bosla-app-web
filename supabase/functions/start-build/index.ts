@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-// start-build v22 — Edge Function لتوليد وبناء تطبيق من برومبت واحد.
+// start-build v23 — Edge Function لتوليد وبناء تطبيق من برومبت واحد.
 // التدفق: تحقق من المستخدم → منع خصم مكرر (بناء «building» بنفس الوصف خلال 10 دقائق يُعاد دون خصم)
 // → تحقق من الرصيد → خصم النقاط → إنشاء سجل بناء
 // → البدء المتزامن قبل الرد 200 (مهلة 120 ثانية)،
@@ -10,18 +10,18 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 // build-apk.yml → انتظار النتيجة → تحديث سجل البناء (نجاح: رابط صفحة الـ run؛
 // فشل: استرجاع النقاط).
 //
-// v22 — Groq أولاً ثم Gemini احتياطياً: توليد Gemini الطويل بطيء جداً الآن —
-// بناء 11:32 CAT فشل بعد جولتين × 60ث دون أي رد، وبناء 11:59 CAT (v21) فشل
-// بنفس الطريقة رغم مهلة 110ث. المشكلة ليست المهلة بل المصدر البطيء نفسه.
-// Groq (مجاني، بدون بطاقة) يولّد بسرعة 276–316 توكن/ثانية: توليد 5 ملفات
-// ≈ 20–35 ثانية. المفاتيح GROQ_API_KEY (+ _2.._10، من حسابات مختلفة لحدود
-// مستقلة)؛ إن لم توجد مفاتيح Groq إطلاقاً يُتخطى الطور ويعمل Gemini كما في v21.
-// حدود Groq المجانية (llama-3.3-70b-versatile): 12,000 توكن/دقيقة، 100,000
-// توكن/يوم — طلب التوليد ≈ 1,500 توكن إدخال + حتى 8,192 إخراج، أي ضمن الحد.
-// لهذا السبب max_tokens = 8192 (أعلى من ذلك قد يتجاوز حد الدقيقة فيُرفض الطلب)؛
-// إن قُطع الإخراج عند الحد سقطت ملفات من التحقق فينتقل للجولة/المزود التالي.
-// مسار الإصلاح (fixGeneratedCode) يبقى Gemini فقط: برومبت الإصلاح يحمل الملفات
-// السابقة كاملة (≈ 7,000+ توكن إدخال) فيتجاوز حد Groq للدقيقة.
+// v23 — Groq أُزيل كاملاً + تحقق من موارد R.* في السباق:
+// (1) Groq ميت للتوليد: النموذج llama-3.3-70b-versatile أوقفته Groq في
+// 2026-08-16 للخطة المجانية (كل المفاتيح الخمسة ردّت 404 model_not_found في
+// بناء 12:27 CAT)، وكل نماذج الدردشة المجانية الحالية حدّها 8,000 توكن/دقيقة
+// — أقل من طلب توليد واحد (≈ 2,000 إدخال + 8,000+ إخراج). لا نموذج مجاني
+// يصلح، فأُزيل الطور كاملاً وعاد السباق Gemini فقط (v21 + timeoutFor).
+// (2) بناء c2e94b00 فشل في Gradle لأن MainActivity.kt استخدم R.id.menu_store
+// و R.id.menu_fav و R.id.menu_cart دون أن يولّد ملف res/menu يعرّفها — والفحص
+// السابق كان يراجع الـ drawables فقط. السباق الآن يتحقق أيضاً من كل مرجع
+// R.id/R.menu/R.layout/R.color/R.string في كوتلن و @menu/@id/@color/@string
+// في XML ضد الملفات المولّدة نفسها؛ مرجع غير معرّف يُسقط الجولة مع ملاحظة
+// تصحيح دقيقة للجولة التالية، فلا يصل كود مكسور إلى GitHub.
 //
 // ملاحظات جوهرية (بعد مراجعة قاعدة البيانات الحية والتطبيق 2026-11-27):
 // - قاعدة البيانات الحية (SQL 001) تستعمل: debit_points(p_wallet, p_amount,
@@ -68,18 +68,6 @@ const GEMINI_CALL_TIMEOUT_MS = 110000;
 // مثلاً كلها 429 في ثوانٍ — تنتقل الحلقة فوراً للنموذج التالي بالوقت المتبقي.)
 const RACE_BATCH_SIZE = GEMINI_API_KEYS.length;
 const RACE_MODELS_IN_ORDER = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash"];
-// Groq (v22) — المزود الأول للتوليد: مفاتيح GROQ_API_KEY (+ _2.._10) تُقرأ بنفس
-// نمط Gemini؛ مفاتيح من حسابات مختلفة = حدود يومية مستقلة (الحدود على مستوى
-// الحساب لا المفتاح). النموذج llama-3.3-70b-versatile وحده: qwen3-32b حدّه
-// 6,000 توكن/دقيقة فقط — أقل من حجم طلب التوليد — فلا يصلح هنا.
-const GROQ_API_KEYS: string[] = [];
-for (let i = 1; i <= 10; i++) {
-  const key = Deno.env.get(i === 1 ? "GROQ_API_KEY" : "GROQ_API_KEY_" + i);
-  if (key) GROQ_API_KEYS.push(key);
-}
-const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
-const GROQ_MODEL = "llama-3.3-70b-versatile";
-const GROQ_CALL_TIMEOUT_MS = 45000;
 // مهلة أي محاولة لا تتجاوز الوقت المتبقي من الميزانية ناقص 5 ثوانٍ — حتى لا
 // تبدأ محاولة بطيئة بعد فوات الأوان فتقتلها ساعة الحائط دون استرجاع النقاط.
 function timeoutFor(deadline: number, configuredMs: number): number {
@@ -214,40 +202,6 @@ async function callGeminiOnce(model: string, prompt: string, imagesSection: stri
   return files;
 }
 
-// محاولة توليد واحدة عبر Groq (OpenAI-compatible): نفس برومبت النظام ونفس صيغة
-// الملفات المطلوبة. max_tokens = 8192: إدخال ≈ 1,500 توكن + إخراج حتى 8,192
-// ≈ 9,700 توكن، ضمن حد 12,000 توكن/دقيقة للنموذج. حدّ أعلى قد يُرفض بالحد.
-async function callGroqOnce(model: string, systemPrompt: string, userPrompt: string, apiKey: string, keyIndex: number, timeoutMs: number): Promise<Map<string, string>> {
-  const res = await fetch(GROQ_API_URL, {
-    signal: AbortSignal.timeout(timeoutMs),
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      temperature: 0.2,
-      max_tokens: 8192,
-    }),
-  });
-  const data = await res.json().catch(() => null);
-  if (!res.ok) {
-    const retryAfterHeader = res.headers.get("retry-after");
-    const retryAfterSeconds = retryAfterHeader ? parseInt(retryAfterHeader, 10) : parseRetryAfterSeconds(data);
-    console.error("Groq error:", model, `key #${keyIndex}`, res.status, JSON.stringify(data)?.slice(0, 1000));
-    throw Object.assign(new Error("groq failed"), { status: res.status, retryAfterSeconds: Number.isFinite(retryAfterSeconds) ? retryAfterSeconds : undefined });
-  }
-  const text = data?.choices?.[0]?.message?.content as string | undefined;
-  if (!text) throw Object.assign(new Error("groq empty"), { status: 502 });
-  const files = parseGeneratedFiles(text);
-  for (const required of GENERATED_FILES) {
-    if (!files.has(required)) throw new Error(`Groq output missing file: ${required}`);
-  }
-  return files;
-}
-
 function invalidDrawableRefs(files: Map<string, string>, allowed: Set<string>): string[] {
   const bad = new Set<string>();
   for (const content of files.values()) {
@@ -256,6 +210,51 @@ function invalidDrawableRefs(files: Map<string, string>, allowed: Set<string>): 
     }
     for (const m of content.matchAll(/R\.drawable\.([A-Za-z0-9_]+)/g)) {
       if (!allowed.has(m[1])) bad.add(m[1]);
+    }
+  }
+  return [...bad];
+}
+
+// تحقق من موارد R.*: كل مرجع R.id/R.menu/R.layout/R.color/R.string في كوتلن،
+// وكل مرجع @menu/@id/@color/@string في XML، يجب أن يكون معرّفاً في الملفات
+// المولّدة نفسها. مرجع غير معرّف = خطأ ترجمة مؤكد في Gradle (مثل R.id.menu_store
+// في بناء c2e94b00 — عناصر قائمة بلا ملف res/menu). يُستثنى android.R.*
+// و@android:* (موارد نظام أندرويد)، و@+id/ في XML يُحسب تعريفاً لا مرجعاً.
+function invalidResourceRefs(files: Map<string, string>): string[] {
+  const definedIds = new Set<string>();
+  const definedMenus = new Set<string>();
+  const definedLayouts = new Set<string>();
+  const definedColors = new Set<string>();
+  const definedStrings = new Set<string>();
+  for (const [path, content] of files) {
+    if (!path.endsWith(".xml")) continue;
+    if (path.startsWith("app/src/main/res/menu/")) {
+      const m = path.match(/([^/]+)\.xml$/);
+      if (m) definedMenus.add(m[1]);
+    }
+    if (path.startsWith("app/src/main/res/layout/")) {
+      const m = path.match(/([^/]+)\.xml$/);
+      if (m) definedLayouts.add(m[1]);
+    }
+    for (const mm of content.matchAll(/@\+id\/([A-Za-z0-9_]+)/g)) definedIds.add(mm[1]);
+    for (const mm of content.matchAll(/<color\s+name="([A-Za-z0-9_]+)"/g)) definedColors.add(mm[1]);
+    for (const mm of content.matchAll(/<string\s+name="([A-Za-z0-9_]+)"/g)) definedStrings.add(mm[1]);
+  }
+  const bad = new Set<string>();
+  const check = (label: string, name: string, ok: boolean) => { if (!ok) bad.add(`${label}.${name}`); };
+  for (const [path, content] of files) {
+    if (path.endsWith(".kt") || path.endsWith(".java")) {
+      for (const mm of content.matchAll(/(?<!android\.)R\.id\.([A-Za-z0-9_]+)/g)) check("R.id", mm[1], definedIds.has(mm[1]));
+      for (const mm of content.matchAll(/(?<!android\.)R\.menu\.([A-Za-z0-9_]+)/g)) check("R.menu", mm[1], definedMenus.has(mm[1]));
+      for (const mm of content.matchAll(/(?<!android\.)R\.layout\.([A-Za-z0-9_]+)/g)) check("R.layout", mm[1], definedLayouts.has(mm[1]));
+      for (const mm of content.matchAll(/(?<!android\.)R\.color\.([A-Za-z0-9_]+)/g)) check("R.color", mm[1], definedColors.has(mm[1]));
+      for (const mm of content.matchAll(/(?<!android\.)R\.string\.([A-Za-z0-9_]+)/g)) check("R.string", mm[1], definedStrings.has(mm[1]));
+    }
+    if (path.endsWith(".xml")) {
+      for (const mm of content.matchAll(/@menu\/([A-Za-z0-9_]+)/g)) check("@menu", mm[1], definedMenus.has(mm[1]));
+      for (const mm of content.matchAll(/@id\/([A-Za-z0-9_]+)/g)) check("@id", mm[1], definedIds.has(mm[1]));
+      for (const mm of content.matchAll(/@color\/([A-Za-z0-9_]+)/g)) check("@color", mm[1], definedColors.has(mm[1]));
+      for (const mm of content.matchAll(/@string\/([A-Za-z0-9_]+)/g)) check("@string", mm[1], definedStrings.has(mm[1]));
     }
   }
   return [...bad];
@@ -281,42 +280,24 @@ async function raceGenerateAttempt(
   if (bad.length > 0) {
     throw Object.assign(new Error(`Gemini output references missing drawables: ${bad.join(", ")}`), { badDrawables: bad });
   }
-  return files;
-}
-
-// محاولة Groq داخل السباق: توليد + تحقق من الموارد، بنفس عقد محاولة Gemini.
-async function raceGroqAttempt(
-  systemPrompt: string,
-  userPrompt: string,
-  apiKey: string,
-  keyIndex: number,
-  extraNote: string,
-  allowedDrawables: Set<string>,
-  timeoutMs: number,
-): Promise<Map<string, string>> {
-  const files = await callGroqOnce(GROQ_MODEL, systemPrompt, userPrompt + extraNote, apiKey, keyIndex, timeoutMs);
-  const selfDrawables = [...files.keys()]
-    .filter((p) => p.startsWith("app/src/main/res/drawable/") && p.endsWith(".xml"))
-    .map((p) => p.slice("app/src/main/res/drawable/".length, -4));
-  const bad = invalidDrawableRefs(files, new Set([...allowedDrawables, ...selfDrawables]));
-  if (bad.length > 0) {
-    throw Object.assign(new Error(`Groq output references missing drawables: ${bad.join(", ")}`), { badDrawables: bad });
+  const badResources = invalidResourceRefs(files);
+  if (badResources.length > 0) {
+    throw Object.assign(new Error(`Gemini output references undefined resources: ${badResources.join(", ")}`), { badResources });
   }
   return files;
 }
 
-type RaceError = { status?: number; retryAfterSeconds?: number; badDrawables?: string[]; keyIndex?: number; message?: string };
+type RaceError = { status?: number; retryAfterSeconds?: number; badDrawables?: string[]; badResources?: string[]; keyIndex?: number; message?: string };
 
 // جولات سباق: (نموذج × دفعة مفاتيح) — كل جولة تنافس متوازي، وأول نجاح يفوز فوراً
 // دون انتظار المعلّقين (Promise.any). الجولات تستمر ما دام الوقت يسمح؛ جولة تعلّق
 // كامل تكلف مهلة محاولتها فقط، لا الميزانية كلها.
-// الطور الأول Groq (سريع، مهلة 45ث): جولة واحدة على كل المفاتيح. إن لم توجد
-// مفاتيح Groq يُتخطى الطور كاملاً. الطور الثاني Gemini (v21 كما هو) احتياطياً.
 async function generateCode(prompt: string, imagesSection: string, allowedDrawables: Set<string>, deadline: number): Promise<Map<string, string>> {
+  if (GEMINI_API_KEYS.length === 0) throw Object.assign(new Error("missing GEMINI_API_KEY"), { status: 500 });
   let extraNote = "";
   let all429 = true;
   let minRetryAfter: number | undefined;
-  const noteErrors = (errors: RaceError[], provider: string, model: string, timeoutMs: number) => {
+  const noteErrors = (errors: RaceError[], model: string, timeoutMs: number) => {
     for (const e of errors) {
       const status = e?.status;
       const retryAfter = e?.retryAfterSeconds;
@@ -325,46 +306,22 @@ async function generateCode(prompt: string, imagesSection: string, allowedDrawab
       }
       if (status !== 429) all429 = false;
       if (status === undefined) {
-        console.error(`${provider} ${model} key #${e?.keyIndex ?? "?"} timed out after ${timeoutMs}ms, falling back...`);
+        console.error(`Gemini ${model} key #${e?.keyIndex ?? "?"} timed out after ${timeoutMs}ms, falling back...`);
       } else {
-        console.error(`${provider} ${model} key #${e?.keyIndex ?? "?"} failed (${status}), falling back...`);
+        console.error(`Gemini ${model} key #${e?.keyIndex ?? "?"} failed (${status}), falling back...`);
       }
+      const bad: string[] = [];
       if (Array.isArray(e?.badDrawables) && e.badDrawables.length > 0) {
-        extraNote = `\n\nتصحيح مهم: الموارد التالية غير موجودة في المشروع — لا تستخدمها إطلاقاً: ${e.badDrawables.join(", ")}. استخدم فقط الموارد المسموحة.`;
+        bad.push(...e.badDrawables.map((d: string) => `drawable ${d}`));
+      }
+      if (Array.isArray(e?.badResources) && e.badResources.length > 0) {
+        bad.push(...e.badResources);
+      }
+      if (bad.length > 0) {
+        extraNote = `\n\nتصحيح مهم: المراجع التالية غير معرّفة في المشروع — إما ولّد الملف الذي يعرّفها (مثلاً res/menu/*.xml لعناصر القائمة) أو لا تستخدمها إطلاقاً: ${bad.join(", ")}.`;
       }
     }
   };
-  // الطور الأول: Groq.
-  if (GROQ_API_KEYS.length > 0) {
-    let systemPrompt = "";
-    try {
-      const systemRes = await fetch(GENERATION_PROMPT_URL, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-      if (!systemRes.ok) throw new Error(`cannot fetch GENERATION_PROMPT.md: ${systemRes.status}`);
-      systemPrompt = await systemRes.text();
-    } catch (e) {
-      console.error("[start-build] Groq phase skipped: prompt fetch failed", e);
-    }
-    if (systemPrompt && Date.now() < deadline) {
-      const groqTimeout = timeoutFor(deadline, GROQ_CALL_TIMEOUT_MS);
-      const userPrompt = `## وصف المستخدم للتطبيق:\n${prompt}${imagesSection}`;
-      try {
-        const files = await Promise.any(
-          GROQ_API_KEYS.map((k, i) =>
-            raceGroqAttempt(systemPrompt, userPrompt, k, i + 1, extraNote, allowedDrawables, groqTimeout)
-              .catch((e: RaceError) => { throw Object.assign(e, { keyIndex: i + 1 }); }),
-          ),
-        );
-        console.log(`[start-build] Race won: groq ${GROQ_MODEL} keys 1-${GROQ_API_KEYS.length}`);
-        return files;
-      } catch (aggErr) {
-        const errors = (aggErr as AggregateError).errors as RaceError[];
-        noteErrors(errors, "Groq", GROQ_MODEL, groqTimeout);
-        console.error(`[start-build] Race round groq ${GROQ_MODEL} keys 1-${GROQ_API_KEYS.length} all failed`);
-      }
-    }
-  }
-  // الطور الثاني: Gemini (v21).
-  if (GEMINI_API_KEYS.length === 0) throw Object.assign(new Error("missing GEMINI_API_KEY"), { status: 500 });
   const rounds: Array<{ model: string; keyIndexes: number[] }> = [];
   for (const model of RACE_MODELS_IN_ORDER) {
     for (let start = 0; start < GEMINI_API_KEYS.length; start += RACE_BATCH_SIZE) {
@@ -386,7 +343,7 @@ async function generateCode(prompt: string, imagesSection: string, allowedDrawab
       return files;
     } catch (aggErr) {
       const errors = (aggErr as AggregateError).errors as RaceError[];
-      noteErrors(errors, "Gemini", round.model, roundTimeout);
+      noteErrors(errors, round.model, roundTimeout);
       console.error(`[start-build] Race round ${round.model} keys ${round.keyIndexes.map((k) => k + 1).join(",")} all failed`);
     }
   }
