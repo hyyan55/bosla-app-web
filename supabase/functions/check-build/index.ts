@@ -1,7 +1,11 @@
-// check-build — Edge Function لفحص حالة بناء واحد دون انتظار داخل الدالة.
+// check-build v20 — Edge Function لفحص حالة بناء واحد دون انتظار داخل الدالة.
 // التطبيق يستدعيها مراراً: كل استدعاء يفحص GitHub مرة واحدة فقط ثم يرد فوراً.
 // إذا كان البناء مكتملاً بنجاح: يحدّث builds ويرسل إشعار FCM.
 // إذا فشل: محاولة إصلاح واحدة (أقل من 3 عمليات مكتملة)، وإلا يفشل البناء ويسترد النقاط.
+//
+// v20 — سباق متوازي في fixGeneratedCode مثل start-build v20: مفتاح معلّق واحد
+// كان يأكل مهلة الإصلاح (40ث) كلها في التصميم المتسلسل. الآن كل جولة تسبق
+// نموذجاً واحداً على دفعة مفاتيح (4) في نفس الوقت، وأول نجاح يفوز فوراً.
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
@@ -21,6 +25,9 @@ const GENERATION_PROMPT_URL = `https://raw.githubusercontent.com/${REPO_OWNER}/$
 const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite"];
 const FETCH_TIMEOUT_MS = 10000;
 const FIX_DEADLINE_MS = 40000;
+// السباق المتوازي (v20): دفعة مفاتيح في كل جولة؛ 3.5-flash أولاً، ثم lite، ثم 3.8-flash.
+const RACE_BATCH_SIZE = 4;
+const RACE_MODELS_IN_ORDER = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash"];
 const MAX_COMPLETED_RUNS = 3;
 const FIX_NL = String.fromCharCode(10);
 const GENERATED_FILES = [
@@ -177,19 +184,26 @@ async function fetchFailedBuildError(runId: number | null): Promise<string> {
 async function fixGeneratedCode(previousFiles: Map<string, string>, errorExcerpt: string, deadline: number): Promise<Map<string, string>> {
   const previous = [...previousFiles.entries()].map(([path, content]) => "### FILE: " + path + FIX_NL + "```" + FIX_NL + content + FIX_NL + "```").join(FIX_NL + FIX_NL);
   const fixPrompt = "The previous Android app failed to build with this error:" + FIX_NL + errorExcerpt + FIX_NL + FIX_NL + "Fix ONLY the broken code and keep everything else identical. Output the FULL corrected files in the same ### FILE: blocks. Use ONLY APIs that exist in AndroidX and in the template build.gradle (never invent new listener names). Here are the previous files:" + FIX_NL + FIX_NL + previous;
-  for (let k = 0; k < GEMINI_API_KEYS.length; k++) {
-    const apiKey = GEMINI_API_KEYS[k];
-    const keyIndex = k + 1;
-    for (let m = 0; m < GEMINI_MODELS.length; m++) {
-      const model = GEMINI_MODELS[m];
-      try {
-        if (Date.now() > deadline) throw new Error("fix phase deadline exceeded");
-        return await callGeminiOnce(model, fixPrompt, "", apiKey, keyIndex);
-      } catch (e) {
-        console.error("Gemini fix " + model + " key #" + keyIndex + " failed", e);
-      }
+  // سباق متوازي: جولات (نموذج × دفعة مفاتيح)، أول نجاح يفوز فوراً دون انتظار المعلّقين.
+  const rounds: Array<{ model: string; keyIndexes: number[] }> = [];
+  for (const model of RACE_MODELS_IN_ORDER) {
+    for (let start = 0; start < GEMINI_API_KEYS.length; start += RACE_BATCH_SIZE) {
+      const keyIndexes: number[] = [];
+      for (let i = start; i < Math.min(start + RACE_BATCH_SIZE, GEMINI_API_KEYS.length); i++) keyIndexes.push(i);
+      rounds.push({ model, keyIndexes });
     }
   }
+  for (const round of rounds) {
+    if (Date.now() > deadline) throw new Error("fix phase deadline exceeded");
+    try {
+      return await Promise.any(
+        round.keyIndexes.map((k) => callGeminiOnce(round.model, fixPrompt, "", GEMINI_API_KEYS[k], k + 1)),
+      );
+    } catch (e) {
+      console.error("[check-build] Fix race round " + round.model + " keys " + round.keyIndexes.map((k) => k + 1).join(",") + " all failed", e);
+    }
+  }
+  if (Date.now() > deadline) throw new Error("fix phase deadline exceeded");
   throw Object.assign(new Error("gemini fix failed"), { status: 502 });
 }
 async function pushGeneratedCode(branch: string, files: Map<string, string>): Promise<void> {

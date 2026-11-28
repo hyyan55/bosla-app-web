@@ -95,7 +95,7 @@ export function startApkDownload(build: AppBuild): void {
     };
   });
 
-  // لا يُعلَّم البناء بحالة done إلا بعد تأكيد downloadApkWithProgress عبر Filesystem.stat.
+  // لا يُعلَّم البناء بحالة done إلا بعد تأكيد downloadApkWithProgress عبر DownloadManager.
   let nativeFileVerified = false;
 
   void downloadApkWithProgress(

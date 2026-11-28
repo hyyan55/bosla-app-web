@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-// start-build v19 — Edge Function لتوليد وبناء تطبيق من برومبت واحد.
+// start-build v20 — Edge Function لتوليد وبناء تطبيق من برومبت واحد.
 // التدفق: تحقق من المستخدم → منع خصم مكرر (بناء «building» بنفس الوصف خلال 10 دقائق يُعاد دون خصم)
 // → تحقق من الرصيد → خصم النقاط → إنشاء سجل بناء
 // → البدء المتزامن قبل الرد 200 (مهلة 120 ثانية؛ مهلة كل محاولة توليد 60 ثانية لأن الرد طويل)،
@@ -9,6 +9,13 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 // توليد الكود بـ Gemini → فرع جديد في bosla-app → دفع الكود → تشغيل workflow
 // build-apk.yml → انتظار النتيجة → تحديث سجل البناء (نجاح: رابط صفحة الـ run؛
 // فشل: استرجاع النقاط).
+//
+// v20 — سباق متوازي بدل التسلسل: في v19 كان مفتاح واحد معلّق يأكل الميزانية كلها
+// (60ث × 3 نماذج = 180ث > 120ث) فلا تصل الحلقة للمفاتيح 2–8 إطلاقاً — وهذا ما قتل
+// بناء 10:56 CAT (مفتاح #1 علّق 60ث مرتين ثم انتهت المهلة). الآن كل جولة تسبق
+// نموذجاً واحداً على دفعة مفاتيح (4) في نفس الوقت، وأول نجاح يفوز فوراً؛ الجولات
+// تستمر (3.5-flash ثم lite ثم 3.8-flash) ما دام الوقت يسمح. مفتاح معلّق واحد
+// لا يوقف البناء بعد اليوم.
 //
 // ملاحظات جوهرية (بعد مراجعة قاعدة البيانات الحية والتطبيق 2026-11-27):
 // - قاعدة البيانات الحية (SQL 001) تستعمل: debit_points(p_wallet, p_amount,
@@ -44,13 +51,15 @@ const FIX_PHASE_DEADLINE_MS = 180000;
 
 const GENERATION_PROMPT_URL = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/GENERATION_PROMPT.md`;
 const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite"];
-const RETRY_DELAYS_MS = [2000, 3000];
 const SYNC_PHASE_DEADLINE_MS = 120000;
 const FETCH_TIMEOUT_MS = 10000;
-const FALLBACK_DELAY_MS = 3000;
 // مهلة محاولة توليد واحدة: رد التوليد طويل (5 ملفات) وقد يستغرق 15–45 ثانية؛
 // مهلة 20 ثانية كانت تقتل توليداً سليماً بطيئاً وتُسجَّل «exhausted» زوراً.
 const GEMINI_CALL_TIMEOUT_MS = 60000;
+// السباق المتوازي (v20): عدد المفاتيح في كل جولة، وترتيب النماذج عبر الجولات.
+// 3.5-flash أولاً (المثبت)، ثم lite (ثبت أنه يجيب عند نفاد حصة 3.5/3.8)، ثم 3.8-flash.
+const RACE_BATCH_SIZE = 4;
+const RACE_MODELS_IN_ORDER = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash"];
 // نافذة منع الخصم المكرر: بناء «building» بنفس الوصف خلال هذه المدة يُعاد دون خصم جديد.
 const DEDUP_WINDOW_MS = 10 * 60 * 1000;
 
@@ -193,54 +202,78 @@ function invalidDrawableRefs(files: Map<string, string>, allowed: Set<string>): 
   return [...bad];
 }
 
+// محاولة توليد واحدة داخل السباق: توليد + تحقق من الموارد. أي فشل (بما فيه موارد
+// مفقودة) يُرمى كخطأ موسوم بمؤشر المفتاح، فيلتقطه جامع أخطاء الجولة.
+async function raceGenerateAttempt(
+  model: string,
+  prompt: string,
+  imagesSection: string,
+  apiKey: string,
+  keyIndex: number,
+  extraNote: string,
+  allowedDrawables: Set<string>,
+): Promise<Map<string, string>> {
+  const files = await callGeminiOnce(model, prompt, imagesSection + extraNote, apiKey, keyIndex);
+  const selfDrawables = [...files.keys()]
+    .filter((p) => p.startsWith("app/src/main/res/drawable/") && p.endsWith(".xml"))
+    .map((p) => p.slice("app/src/main/res/drawable/".length, -4));
+  const bad = invalidDrawableRefs(files, new Set([...allowedDrawables, ...selfDrawables]));
+  if (bad.length > 0) {
+    throw Object.assign(new Error(`Gemini output references missing drawables: ${bad.join(", ")}`), { badDrawables: bad });
+  }
+  return files;
+}
+
+type RaceError = { status?: number; retryAfterSeconds?: number; badDrawables?: string[]; keyIndex?: number; message?: string };
+
+// جولات سباق: (نموذج × دفعة مفاتيح) — كل جولة تنافس متوازي، وأول نجاح يفوز فوراً
+// دون انتظار المعلّقين (Promise.any). الجولات تستمر ما دام الوقت يسمح؛ جولة تعلّق
+// كامل (كل محاولاتها 60ث) تكلف 60ث فقط، لا الميزانية كلها.
 async function generateCode(prompt: string, imagesSection: string, allowedDrawables: Set<string>, deadline: number): Promise<Map<string, string>> {
   if (GEMINI_API_KEYS.length === 0) throw Object.assign(new Error("missing GEMINI_API_KEY"), { status: 500 });
   let extraNote = "";
   let all429 = true;
   let minRetryAfter: number | undefined;
-  for (let k = 0; k < GEMINI_API_KEYS.length; k++) {
-    const apiKey = GEMINI_API_KEYS[k];
-    const keyIndex = k + 1;
-  for (let m = 0; m < GEMINI_MODELS.length; m++) {
-    const model = GEMINI_MODELS[m];
-    let lastStatus: number | undefined;    for (let attempt = 0; attempt < 3; attempt++) {
-        if (Date.now() > deadline) throw new Error("sync phase deadline exceeded (120s)");
-      try {
-        const files = await callGeminiOnce(model, prompt, imagesSection + extraNote, apiKey, keyIndex);
-        const bad = invalidDrawableRefs(files, new Set([...allowedDrawables, ...[...files.keys()].filter((p) => p.startsWith("app/src/main/res/drawable/") && p.endsWith(".xml")).map((p) => p.slice("app/src/main/res/drawable/".length, -4))]));
-        if (bad.length > 0) {
-          console.error(`Gemini ${model} used missing drawables: ${bad.join(", ")} — retrying with correction`);
-          extraNote = `\n\nتصحيح مهم: الموارد التالية غير موجودة في المشروع — لا تستخدمها إطلاقاً: ${bad.join(", ")}. استخدم فقط الموارد المسموحة.`;
-          if (k === GEMINI_API_KEYS.length - 1 && m === GEMINI_MODELS.length - 1 && attempt === 2) throw new Error(`Gemini output references missing drawables: ${bad.join(", ")}`);
-          continue;
-        }
-        return files;
-      } catch (e) {
-        const status = (lastStatus = (e as { status?: number }).status);
-        const retryAfter = (e as { retryAfterSeconds?: number }).retryAfterSeconds;
+  const rounds: Array<{ model: string; keyIndexes: number[] }> = [];
+  for (const model of RACE_MODELS_IN_ORDER) {
+    for (let start = 0; start < GEMINI_API_KEYS.length; start += RACE_BATCH_SIZE) {
+      const keyIndexes: number[] = [];
+      for (let i = start; i < Math.min(start + RACE_BATCH_SIZE, GEMINI_API_KEYS.length); i++) keyIndexes.push(i);
+      rounds.push({ model, keyIndexes });
+    }
+  }
+  for (const round of rounds) {
+    if (Date.now() > deadline) break;
+    const attempts = round.keyIndexes.map((k) =>
+      raceGenerateAttempt(round.model, prompt, imagesSection, GEMINI_API_KEYS[k], k + 1, extraNote, allowedDrawables)
+        .catch((e: RaceError) => { throw Object.assign(e, { keyIndex: k + 1 }); }),
+    );
+    try {
+      const files = await Promise.any(attempts);
+      console.log(`[start-build] Race won: ${round.model} keys ${round.keyIndexes.map((k) => k + 1).join(",")}`);
+      return files;
+    } catch (aggErr) {
+      const errors = (aggErr as AggregateError).errors as RaceError[];
+      for (const e of errors) {
+        const status = e?.status;
+        const retryAfter = e?.retryAfterSeconds;
         if (status === 429 && typeof retryAfter === "number") {
           minRetryAfter = minRetryAfter === undefined ? retryAfter : Math.min(minRetryAfter, retryAfter);
         }
         if (status !== 429) all429 = false;
-        const retryable = status === 503;
-        if (!retryable || attempt === 2) break;
-        console.error(`Gemini ${model} key #${keyIndex} attempt ${attempt + 1} failed (${status}), retrying...`);
-        await sleep(RETRY_DELAYS_MS[attempt]);
+        if (status === undefined) {
+          console.error(`Gemini ${round.model} key #${e?.keyIndex ?? "?"} timed out after ${GEMINI_CALL_TIMEOUT_MS}ms, falling back...`);
+        } else {
+          console.error(`Gemini ${round.model} key #${e?.keyIndex ?? "?"} failed (${status}), falling back...`);
+        }
+        if (Array.isArray(e?.badDrawables) && e.badDrawables.length > 0) {
+          extraNote = `\n\nتصحيح مهم: الموارد التالية غير موجودة في المشروع — لا تستخدمها إطلاقاً: ${e.badDrawables.join(", ")}. استخدم فقط الموارد المسموحة.`;
+        }
       }
-    }
-    if ((m < GEMINI_MODELS.length - 1 || k < GEMINI_API_KEYS.length - 1)) {
-      if (lastStatus === 429) {
-        // 429 يفشل فوراً دون انتظار — انتقل للمفتاح/النموذج التالي مباشرة
-      } else if (lastStatus === undefined) {
-        // انتهت مهلة المحاولة (توليد بطيء)، لا «exhausted» — ولا نوم إضافي بعد 60 ثانية انتظار
-        console.error(`Gemini ${model} key #${keyIndex} timed out after ${GEMINI_CALL_TIMEOUT_MS}ms, falling back...`);
-      } else {
-        console.error(`Gemini ${model} key #${keyIndex} exhausted, falling back...`);
-        await sleep(FALLBACK_DELAY_MS);
-      }
+      console.error(`[start-build] Race round ${round.model} keys ${round.keyIndexes.map((k) => k + 1).join(",")} all failed`);
     }
   }
-  }
+  if (Date.now() > deadline) throw new Error("sync phase deadline exceeded (120s)");
   if (all429) {
     throw Object.assign(new Error("gemini quota exhausted"), { status: 429, retryAfterSeconds: minRetryAfter });
   }
@@ -350,19 +383,26 @@ async function fixGeneratedCode(previousFiles: Map<string, string>, errorExcerpt
     .map(([path, content]) => "### FILE: " + path + FIX_NL + "```" + FIX_NL + content + FIX_NL + "```")
     .join(FIX_NL + FIX_NL);
   const fixPrompt = "The previous generated Android app failed to build with this error:" + FIX_NL + errorExcerpt + FIX_NL + FIX_NL + "Fix ONLY the broken code and keep everything else identical. Output the FULL corrected files in the same ### FILE: blocks. Use ONLY APIs that exist in AndroidX/Material as declared in the template's build.gradle (never invent listener names, e.g. never call a listener method that does not exist). Here are the previous files:" + FIX_NL + FIX_NL + previous;
-  for (let k = 0; k < GEMINI_API_KEYS.length; k++) {
-    const apiKey = GEMINI_API_KEYS[k];
-    const keyIndex = k + 1;
-    for (let m = 0; m < GEMINI_MODELS.length; m++) {
-      const model = GEMINI_MODELS[m];
-      try {
-        if (Date.now() > deadline) throw new Error("fix phase deadline exceeded");
-        return await callGeminiOnce(model, fixPrompt, "", apiKey, keyIndex);
-      } catch (e) {
-        console.error("Gemini fix " + model + " key #" + keyIndex + " failed", e);
-      }
+  // سباق متوازي مثل generateCode: جولات (نموذج × دفعة مفاتيح)، أول نجاح يفوز.
+  const rounds: Array<{ model: string; keyIndexes: number[] }> = [];
+  for (const model of RACE_MODELS_IN_ORDER) {
+    for (let start = 0; start < GEMINI_API_KEYS.length; start += RACE_BATCH_SIZE) {
+      const keyIndexes: number[] = [];
+      for (let i = start; i < Math.min(start + RACE_BATCH_SIZE, GEMINI_API_KEYS.length); i++) keyIndexes.push(i);
+      rounds.push({ model, keyIndexes });
     }
   }
+  for (const round of rounds) {
+    if (Date.now() > deadline) throw new Error("fix phase deadline exceeded");
+    try {
+      return await Promise.any(
+        round.keyIndexes.map((k) => callGeminiOnce(round.model, fixPrompt, "", GEMINI_API_KEYS[k], k + 1)),
+      );
+    } catch (e) {
+      console.error(`Gemini fix race round ${round.model} keys ${round.keyIndexes.map((k) => k + 1).join(",")} all failed`, e);
+    }
+  }
+  if (Date.now() > deadline) throw new Error("fix phase deadline exceeded");
   throw Object.assign(new Error("gemini fix failed"), { status: 502 });
 }
 async function startBuildSync(buildId: string, prompt: string, imagesSection: string, imageFiles: Array<{ url: string; name: string }>, deadline: number): Promise<{ branch: string; since: string; files: Map<string, string> }> {
