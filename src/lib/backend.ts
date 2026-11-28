@@ -537,6 +537,20 @@ export async function uploadAppImage(file: File, index: number): Promise<string>
   });
 }
 
+// تقرأ جسم خطأ Edge Function (مثل quota_exhausted) من سياق الخطأ — قد يكون data فارغاً عند 4xx/5xx.
+async function readFunctionsErrorBody(error: unknown): Promise<Record<string, unknown> | null> {
+  try {
+    const ctx = (error as { context?: { json?: () => Promise<unknown> } })?.context;
+    if (ctx && typeof ctx.json === 'function') {
+      const body = await ctx.json();
+      if (body && typeof body === 'object') return body as Record<string, unknown>;
+    }
+  } catch {
+    // ignore — نعود للرسالة العامة
+  }
+  return null;
+}
+
 // ============================================================================
 // Public Service Layer API
 // ============================================================================
@@ -1250,8 +1264,8 @@ export const backend = {
     },
     images?: string[],
   ): Promise<
-    | { ok: true; build: AppBuild }
-    | { ok: false; requiresSupabase?: boolean; insufficientPoints?: boolean; message: string }
+    | { ok: true; build: AppBuild; deduped?: boolean }
+    | { ok: false; requiresSupabase?: boolean; insufficientPoints?: boolean; quotaExhausted?: boolean; message: string }
   > {
     if (!supabase) {
       // Honest notice: never simulate or fake APK builds when Supabase is not configured
@@ -1275,6 +1289,24 @@ export const backend = {
 
       if (error) {
         if (isUnauthorizedError(error)) throw error;
+        const serverBody = await readFunctionsErrorBody(error);
+        if (serverBody?.error === 'insufficient_points') {
+          return {
+            ok: false,
+            insufficientPoints: true,
+            message: 'رصيد نقاطك غير كافٍ — اشحن محفظتك أولاً',
+          };
+        }
+        if (serverBody?.error === 'quota_exhausted') {
+          return {
+            ok: false,
+            quotaExhausted: true,
+            message:
+              typeof serverBody.message === 'string' && serverBody.message
+                ? serverBody.message
+                : 'انتهت حصة الذكاء الاصطناعي اليومية — جرّب لاحقاً',
+          };
+        }
         const msg = (error.message || '').toLowerCase();
         if (msg.includes('insufficient')) {
           return {
@@ -1293,8 +1325,18 @@ export const backend = {
           message: 'رصيد نقاطك غير كافٍ — اشحن محفظتك أولاً',
         };
       }
+      if (data?.error === 'quota_exhausted') {
+        return {
+          ok: false,
+          quotaExhausted: true,
+          message:
+            typeof data.message === 'string' && data.message
+              ? data.message
+              : 'انتهت حصة الذكاء الاصطناعي اليومية — جرّب لاحقاً',
+        };
+      }
 
-      return { ok: true, build: data.build as AppBuild };
+      return { ok: true, build: data.build as AppBuild, deduped: Boolean(data?.deduped) };
     });
   },
 

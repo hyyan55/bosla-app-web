@@ -35,6 +35,41 @@ const MAX_CHARS = 2000;
 const MAX_ATTACHED_IMAGES = 5;
 const CHAT_STORAGE_KEY = 'bosla-chat-messages';
 const PENDING_RETRY_STORAGE_KEY = 'bosla-chat-pending-retry';
+const STARTED_BUILDS_STORAGE_KEY = 'bosla-started-builds';
+
+// بناء بدأ من بطاقة تقدير: يُحفَظ حتى لا يعرض الزر «ابنِ التطبيق» مرة ثانية
+// فيخصم مرتين، ويُمسح عندما يخرج البناء من حالة «building».
+interface StartedBuild {
+  buildId: string;
+  startedAt: number;
+}
+
+function readStartedBuilds(): Record<string, StartedBuild> {
+  try {
+    const raw = localStorage.getItem(STARTED_BUILDS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out: Record<string, StartedBuild> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      const v = value as Partial<StartedBuild> | null;
+      if (v && typeof v.buildId === 'string' && v.buildId && typeof v.startedAt === 'number') {
+        out[key] = { buildId: v.buildId, startedAt: v.startedAt };
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeStartedBuilds(map: Record<string, StartedBuild>): void {
+  try {
+    localStorage.setItem(STARTED_BUILDS_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // ignore storage quota errors
+  }
+}
 
 interface PersistedAttachedImage {
   publicUrl: string;
@@ -432,6 +467,9 @@ export function ChatScreen() {
   });
   const [thinkingStep, setThinkingStep] = useState<'analyzing' | 'estimating'>('analyzing');
   const [buildingId, setBuildingId] = useState<string | null>(null);
+  const [startedBuilds, setStartedBuilds] = useState<Record<string, StartedBuild>>(() =>
+    readStartedBuilds(),
+  );
   const [isOnline, setIsOnline] = useState(
     typeof navigator !== 'undefined' ? navigator.onLine : true,
   );
@@ -464,6 +502,38 @@ export function ChatScreen() {
         setNotifDeniedBanner(true);
       }
     });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // مصالحة حالة «بدأ البناء» المحفوظة مع السيرفر: إن لم يعد البناء «building»
+  // (نجح أو فشل واستُردت النقاط)، اسمح بإعادة البناء من البطاقة نفسها.
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      const stored = readStartedBuilds();
+      if (Object.keys(stored).length === 0) return;
+      try {
+        const builds = await backend.getBuilds();
+        if (!active) return;
+        const next = { ...stored };
+        let changed = false;
+        for (const msgId of Object.keys(stored)) {
+          const b = builds.find((x) => x.id === stored[msgId].buildId);
+          if (!b || b.status !== 'building') {
+            delete next[msgId];
+            changed = true;
+          }
+        }
+        if (changed) {
+          writeStartedBuilds(next);
+          setStartedBuilds(next);
+        }
+      } catch {
+        // أبقِ الحالة المحفوظة؛ تُصالَح في الزيارة التالية
+      }
+    })();
     return () => {
       active = false;
     };
@@ -775,8 +845,39 @@ export function ChatScreen() {
     }
   };
 
+  const markBuildStarted = (msgId: string, buildId: string) => {
+    setStartedBuilds((prev) => {
+      const next = { ...prev, [msgId]: { buildId, startedAt: Date.now() } };
+      writeStartedBuilds(next);
+      return next;
+    });
+  };
+
+  // بعد انتهاء مهلة الانتظار قد يكون السيرفر بدأ البناء فعلاً — ابحث عن بناء «building»
+  // حديث بنفس الوصف قبل إظهار خطأ، حتى لا يضغط المستخدم «ابنِ التطبيق» مرة ثانية.
+  const findJustStartedBuild = async (description: string) => {
+    try {
+      const builds = await backend.getBuilds();
+      const wanted = description.trim();
+      const recent = builds
+        .filter((b) => b.status === 'building')
+        .filter((b) => Date.now() - new Date(b.created_at).getTime() < 3 * 60 * 1000)
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      return recent.find((b) => b.description.trim() === wanted) ?? recent[0] ?? null;
+    } catch {
+      return null;
+    }
+  };
+
   const handleBuildApp = async (msgId: string, description: string, estimate: EstimatePayload) => {
     if (buildingId) return;
+
+    // إن كان لهذا التقدير بناء شغال بالفعل، لا تخصم مرة ثانية — خذه إلى تطبيقاتي
+    if (startedBuilds[msgId]) {
+      showToast('هذا البناء بدأ بالفعل — تابعه في تطبيقاتي', 'info');
+      navigate('/builds');
+      return;
+    }
 
     if (!backend.isSupabaseConfigured) {
       setSupabaseNoticeMsgId(msgId);
@@ -804,11 +905,25 @@ export function ChatScreen() {
         setNotifDeniedBanner(false);
       }
 
-      const res = await backend.startBuild({
-        description,
-        complexity: estimate.complexity,
-        images: readyImages,
-      });
+      let res: Awaited<ReturnType<typeof backend.startBuild>>;
+      try {
+        res = await backend.startBuild({
+          description,
+          complexity: estimate.complexity,
+          images: readyImages,
+        });
+      } catch (invokeErr) {
+        // انتهت مهلة الانتظار أو انقطع الاتصال — قد يكون البناء بدأ في السيرفر فعلاً
+        const started = await findJustStartedBuild(description);
+        if (started) {
+          markBuildStarted(msgId, started.id);
+          await refreshProfile();
+          showToast('البناء بدأ بالفعل — تابع حالته في تطبيقاتي', 'success');
+          navigate('/builds');
+          return;
+        }
+        throw invokeErr;
+      }
       if (!res.ok) {
         if (res.requiresSupabase) {
           setSupabaseNoticeMsgId(msgId);
@@ -820,11 +935,22 @@ export function ChatScreen() {
         return;
       }
 
+      if (res.deduped) {
+        markBuildStarted(msgId, res.build.id);
+        await refreshProfile();
+        showToast('هذا البناء شغال بالفعل — تابعه في تطبيقاتي', 'info');
+        navigate('/builds');
+        return;
+      }
+
+      markBuildStarted(msgId, res.build.id);
       clearAttachments();
       await refreshProfile();
       trackAppEvent('build_started', { complexity: estimate.complexity, points: estimate.points });
       showToast('تم خصم النقاط وبدء بناء تطبيقك!', 'success');
       navigate('/builds');
+    } catch {
+      showToast('تعذّر بدء البناء حالياً — حاول لاحقاً', 'error');
     } finally {
       setBuildingId(null);
     }
@@ -1018,30 +1144,41 @@ export function ChatScreen() {
                           </div>
                         )}
 
-                        <button
-                          type="button"
-                          disabled={buildingId === msg.id}
-                          onClick={() =>
-                            handleBuildApp(
-                              msg.id,
-                              msg.promptDescription || msg.text,
-                              msg.estimate!,
-                            )
-                          }
-                          className="w-full min-h-[46px] rounded-xl bg-[#2878E8] hover:bg-[#1E66CC] disabled:opacity-65 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-sm shadow-[#2878E8]/25 active:scale-[0.98] transition-all"
-                        >
-                          {buildingId === msg.id ? (
-                            <>
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                              <span>جاري بدء البناء…</span>
-                            </>
-                          ) : (
-                            <>
-                              <Sparkles className="w-4 h-4" />
-                              <span>ابنِ التطبيق</span>
-                            </>
-                          )}
-                        </button>
+                        {startedBuilds[msg.id] ? (
+                          <button
+                            type="button"
+                            onClick={() => navigate('/builds')}
+                            className="w-full min-h-[46px] rounded-xl bg-[#101D35] hover:bg-[#1B2C4E] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-sm active:scale-[0.98] transition-all"
+                          >
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span>قيد البناء — تابع في تطبيقاتي</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={buildingId === msg.id}
+                            onClick={() =>
+                              handleBuildApp(
+                                msg.id,
+                                msg.promptDescription || msg.text,
+                                msg.estimate!,
+                              )
+                            }
+                            className="w-full min-h-[46px] rounded-xl bg-[#2878E8] hover:bg-[#1E66CC] disabled:opacity-65 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-sm shadow-[#2878E8]/25 active:scale-[0.98] transition-all"
+                          >
+                            {buildingId === msg.id ? (
+                              <>
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                                <span>جاري بدء البناء…</span>
+                              </>
+                            ) : (
+                              <>
+                                <Sparkles className="w-4 h-4" />
+                                <span>ابنِ التطبيق</span>
+                              </>
+                            )}
+                          </button>
+                        )}
                       </motion.div>
                     )}
                   </div>

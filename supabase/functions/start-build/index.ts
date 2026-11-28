@@ -1,9 +1,11 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-// start-build v1 — Edge Function لتوليد وبناء تطبيق من برومبت واحد.
-// التدفق: تحقق من المستخدم → تحقق من الرصيد → خصم النقاط → إنشاء سجل بناء
-// → البدء المتزامن قبل الرد 200 (مهلة 45 ثانية)، ثم الرد 200 مع {build}، والمتابعة فقط في الخلفية (check-build):
+// start-build v19 — Edge Function لتوليد وبناء تطبيق من برومبت واحد.
+// التدفق: تحقق من المستخدم → منع خصم مكرر (بناء «building» بنفس الوصف خلال 10 دقائق يُعاد دون خصم)
+// → تحقق من الرصيد → خصم النقاط → إنشاء سجل بناء
+// → البدء المتزامن قبل الرد 200 (مهلة 120 ثانية؛ مهلة كل محاولة توليد 60 ثانية لأن الرد طويل)،
+// ثم الرد 200 مع {build}، والمتابعة فقط في الخلفية (check-build):
 // توليد الكود بـ Gemini → فرع جديد في bosla-app → دفع الكود → تشغيل workflow
 // build-apk.yml → انتظار النتيجة → تحديث سجل البناء (نجاح: رابط صفحة الـ run؛
 // فشل: استرجاع النقاط).
@@ -43,9 +45,14 @@ const FIX_PHASE_DEADLINE_MS = 180000;
 const GENERATION_PROMPT_URL = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/GENERATION_PROMPT.md`;
 const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite"];
 const RETRY_DELAYS_MS = [2000, 3000];
-const SYNC_PHASE_DEADLINE_MS = 45000;
+const SYNC_PHASE_DEADLINE_MS = 120000;
 const FETCH_TIMEOUT_MS = 10000;
 const FALLBACK_DELAY_MS = 3000;
+// مهلة محاولة توليد واحدة: رد التوليد طويل (5 ملفات) وقد يستغرق 15–45 ثانية؛
+// مهلة 20 ثانية كانت تقتل توليداً سليماً بطيئاً وتُسجَّل «exhausted» زوراً.
+const GEMINI_CALL_TIMEOUT_MS = 60000;
+// نافذة منع الخصم المكرر: بناء «building» بنفس الوصف خلال هذه المدة يُعاد دون خصم جديد.
+const DEDUP_WINDOW_MS = 10 * 60 * 1000;
 
 const POINTS_BY_COMPLEXITY: Record<string, number> = {
   simple: 100,
@@ -115,6 +122,34 @@ function parseGeneratedFiles(text: string): Map<string, string> {
   return files;
 }
 
+// تستخرج «retry in 9h39m36s» من رسالة خطأ الحصة (أو retryDelay بالثواني) — تعود بالثواني أو undefined.
+function parseRetryAfterSeconds(data: unknown): number | undefined {
+  try {
+    const err = (data as { error?: { message?: string; details?: Array<{ retryDelay?: string }> } })?.error;
+    if (!err) return undefined;
+    const fromDetails = err.details?.find((d) => typeof d?.retryDelay === "string")?.retryDelay;
+    if (fromDetails) {
+      const s = parseFloat(fromDetails.replace(/s$/i, ""));
+      if (Number.isFinite(s) && s > 0) return Math.round(s);
+    }
+    const msg = err.message || "";
+    const m = msg.match(/retry in\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:([\d.]+)s)?/i);
+    if (m && (m[1] || m[2] || m[3])) {
+      const secs = (Number(m[1] || 0) * 3600) + (Number(m[2] || 0) * 60) + Number(m[3] || 0);
+      if (secs > 0) return Math.round(secs);
+    }
+  } catch { /* ignore */ }
+  return undefined;
+}
+// «10:00 صباحاً» بتوقيت السودان (CAT = UTC+2) من عدد ثوانٍ حتى عودة الحصة.
+function formatQuotaResetTime(retryAfterSeconds: number): string {
+  const reset = new Date(Date.now() + retryAfterSeconds * 1000 + 2 * 3600 * 1000);
+  const h = reset.getUTCHours();
+  const m = reset.getUTCMinutes();
+  const hour12 = h % 12 === 0 ? 12 : h % 12;
+  const ampm = h < 12 ? "صباحاً" : "مساءً";
+  return `${hour12}:${String(m).padStart(2, "0")} ${ampm}`;
+}
 async function callGeminiOnce(model: string, prompt: string, imagesSection: string, apiKey: string, keyIndex: number): Promise<Map<string, string>> {
   console.log("[start-build] Prompt fetch start");
   const systemRes = await fetch(GENERATION_PROMPT_URL, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
@@ -123,7 +158,7 @@ async function callGeminiOnce(model: string, prompt: string, imagesSection: stri
   const systemPrompt = await systemRes.text();
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const res = await fetch(url, {
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(GEMINI_CALL_TIMEOUT_MS),
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -134,7 +169,7 @@ async function callGeminiOnce(model: string, prompt: string, imagesSection: stri
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     console.error("Gemini error:", model, `key #${keyIndex}`, res.status, JSON.stringify(data)?.slice(0, 1000));
-    throw Object.assign(new Error("gemini failed"), { status: res.status });
+    throw Object.assign(new Error("gemini failed"), { status: res.status, retryAfterSeconds: parseRetryAfterSeconds(data) });
   }
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text as string | undefined;
   if (!text) throw Object.assign(new Error("gemini empty"), { status: 502 });
@@ -161,13 +196,15 @@ function invalidDrawableRefs(files: Map<string, string>, allowed: Set<string>): 
 async function generateCode(prompt: string, imagesSection: string, allowedDrawables: Set<string>, deadline: number): Promise<Map<string, string>> {
   if (GEMINI_API_KEYS.length === 0) throw Object.assign(new Error("missing GEMINI_API_KEY"), { status: 500 });
   let extraNote = "";
+  let all429 = true;
+  let minRetryAfter: number | undefined;
   for (let k = 0; k < GEMINI_API_KEYS.length; k++) {
     const apiKey = GEMINI_API_KEYS[k];
     const keyIndex = k + 1;
   for (let m = 0; m < GEMINI_MODELS.length; m++) {
     const model = GEMINI_MODELS[m];
     let lastStatus: number | undefined;    for (let attempt = 0; attempt < 3; attempt++) {
-        if (Date.now() > deadline) throw new Error("sync phase deadline exceeded (45s)");
+        if (Date.now() > deadline) throw new Error("sync phase deadline exceeded (120s)");
       try {
         const files = await callGeminiOnce(model, prompt, imagesSection + extraNote, apiKey, keyIndex);
         const bad = invalidDrawableRefs(files, new Set([...allowedDrawables, ...[...files.keys()].filter((p) => p.startsWith("app/src/main/res/drawable/") && p.endsWith(".xml")).map((p) => p.slice("app/src/main/res/drawable/".length, -4))]));
@@ -180,18 +217,34 @@ async function generateCode(prompt: string, imagesSection: string, allowedDrawab
         return files;
       } catch (e) {
         const status = (lastStatus = (e as { status?: number }).status);
+        const retryAfter = (e as { retryAfterSeconds?: number }).retryAfterSeconds;
+        if (status === 429 && typeof retryAfter === "number") {
+          minRetryAfter = minRetryAfter === undefined ? retryAfter : Math.min(minRetryAfter, retryAfter);
+        }
+        if (status !== 429) all429 = false;
         const retryable = status === 503;
         if (!retryable || attempt === 2) break;
         console.error(`Gemini ${model} key #${keyIndex} attempt ${attempt + 1} failed (${status}), retrying...`);
         await sleep(RETRY_DELAYS_MS[attempt]);
       }
     }
-    if (lastStatus !== 429 && (m < GEMINI_MODELS.length - 1 || k < GEMINI_API_KEYS.length - 1)) {
-      console.error(`Gemini ${model} key #${keyIndex} exhausted, falling back...`);
-      await sleep(FALLBACK_DELAY_MS);
+    if ((m < GEMINI_MODELS.length - 1 || k < GEMINI_API_KEYS.length - 1)) {
+      if (lastStatus === 429) {
+        // 429 يفشل فوراً دون انتظار — انتقل للمفتاح/النموذج التالي مباشرة
+      } else if (lastStatus === undefined) {
+        // انتهت مهلة المحاولة (توليد بطيء)، لا «exhausted» — ولا نوم إضافي بعد 60 ثانية انتظار
+        console.error(`Gemini ${model} key #${keyIndex} timed out after ${GEMINI_CALL_TIMEOUT_MS}ms, falling back...`);
+      } else {
+        console.error(`Gemini ${model} key #${keyIndex} exhausted, falling back...`);
+        await sleep(FALLBACK_DELAY_MS);
+      }
     }
   }
-  }  throw Object.assign(new Error("gemini failed"), { status: 502 });
+  }
+  if (all429) {
+    throw Object.assign(new Error("gemini quota exhausted"), { status: 429, retryAfterSeconds: minRetryAfter });
+  }
+  throw Object.assign(new Error("gemini failed"), { status: 502 });
 }
 
 async function pushGeneratedCode(branch: string, files: Map<string, string>): Promise<void> {
@@ -498,6 +551,25 @@ const imageFiles = images.map((url, i) => {
     return jsonResponse({ error: "insufficient_points" }, 400);
   }
 
+  // منع الخصم المكرر: إن كان للمستخدم بناء «building» بنفس الوصف خلال آخر 10 دقائق
+  // (ضغطة ثانية، أو إعادة محاولة بعد انتهاء مهلة الانتظار)، أعد البناء الحالي دون خصم جديد.
+  {
+    const dedupSince = new Date(Date.now() - DEDUP_WINDOW_MS).toISOString();
+    const { data: existingBuilding } = await admin
+      .from("builds")
+      .select("id, wallet_number, prompt, complexity, points_charged, status, apk_artifact_url, created_at, completed_at")
+      .eq("wallet_number", profile.wallet_number)
+      .eq("prompt", description)
+      .eq("status", "building")
+      .gte("created_at", dedupSince)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (existingBuilding) {
+      console.log(`[start-build] Dedup: returning existing building build ${existingBuilding.id} for wallet ${profile.wallet_number} (no new debit)`);
+      return jsonResponse({ build: toAppBuild(existingBuilding, user.id, ""), deduped: true }, 200);
+    }
+  }
   const { error: debitError } = await admin.rpc("debit_points", {
     p_wallet: profile.wallet_number,
     p_amount: points,
@@ -540,7 +612,13 @@ const imageFiles = images.map((url, i) => {
     } catch (refundErr) {
       console.error(`[start-build] Sync-failure refund FAILED: build ${build.id}`, refundErr);
     }
-    return jsonResponse({ error: "تعذّر بدء البناء، وتمت إعادة النقاط إلى محفظتك" }, 500);
+    const syncStatus = (syncErr as { status?: number }).status;
+      const retryAfter = (syncErr as { retryAfterSeconds?: number }).retryAfterSeconds;
+      if (syncStatus === 429) {
+        const resetText = typeof retryAfter === "number" ? ` — تعود الحصة ${formatQuotaResetTime(retryAfter)}` : "";
+        return jsonResponse({ error: "quota_exhausted", message: `انتهت حصة الذكاء الاصطناعي اليومية${resetText} — جرّب لاحقاً`, retry_after_seconds: retryAfter ?? null }, 429);
+      }
+      return jsonResponse({ error: "تعذّر بدء البناء، وتمت إعادة النقاط إلى محفظتك" }, 500);
   }
 
   // (the sync try above already returned 200 on success, or 500 with a refund on failure)
