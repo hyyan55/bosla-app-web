@@ -1,9 +1,9 @@
-// check-build v20 — Edge Function لفحص حالة بناء واحد دون انتظار داخل الدالة.
+// check-build v21 — Edge Function لفحص حالة بناء واحد دون انتظار داخل الدالة.
 // التطبيق يستدعيها مراراً: كل استدعاء يفحص GitHub مرة واحدة فقط ثم يرد فوراً.
 // إذا كان البناء مكتملاً بنجاح: يحدّث builds ويرسل إشعار FCM.
 // إذا فشل: محاولة إصلاح واحدة (أقل من 3 عمليات مكتملة)، وإلا يفشل البناء ويسترد النقاط.
 //
-// v20 — سباق متوازي في fixGeneratedCode مثل start-build v20: مفتاح معلّق واحد
+// v21 — مهلة الإصلاح 110ث (محاولة + مرحلة) بدل 20ث/40ث؛ v20 كان الإصلاح يموت بالمهلة قبل أن يكمل أي محاولة
 // كان يأكل مهلة الإصلاح (40ث) كلها في التصميم المتسلسل. الآن كل جولة تسبق
 // نموذجاً واحداً على دفعة مفاتيح (4) في نفس الوقت، وأول نجاح يفوز فوراً.
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
@@ -24,7 +24,7 @@ const WORKFLOW_FILE = "build-apk.yml";
 const GENERATION_PROMPT_URL = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/GENERATION_PROMPT.md`;
 const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite"];
 const FETCH_TIMEOUT_MS = 10000;
-const FIX_DEADLINE_MS = 40000;
+const FIX_DEADLINE_MS = 110000; // v21 — was 40s: a full-file fix needs 60-110s like codegen, so the auto-fix could never succeed
 // السباق المتوازي (v20): دفعة مفاتيح في كل جولة؛ 3.5-flash أولاً، ثم lite، ثم 3.8-flash.
 const RACE_BATCH_SIZE = 4;
 const RACE_MODELS_IN_ORDER = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash"];
@@ -84,6 +84,7 @@ function b64decode(b64: string): string {
   const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
   return new TextDecoder().decode(bytes);
 }
+
 function parseGeneratedFiles(text: string): Map<string, string> {
   const files = new Map<string, string>();
   const parts = text.split("### FILE:");
@@ -108,7 +109,7 @@ async function callGeminiOnce(model: string, prompt: string, imagesSection: stri
   const systemPrompt = await systemRes.text();
   const url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + apiKey;
   const res = await fetch(url, {
-    signal: AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(110000), // v21 — was 20s: same reason as the deadline
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -160,6 +161,7 @@ async function extractZipText(zip: ArrayBuffer): Promise<string> {
   }
   return parts.join(FIX_NL);
 }
+
 async function fetchFailedBuildError(runId: number | null): Promise<string> {
   let failedStep = "unknown step";
   try {
@@ -227,6 +229,7 @@ async function getBranchFiles(branch: string): Promise<Map<string, string>> {
   }
   return files;
 }
+
 async function sendBuildNotification(walletNumber: string, status: "success" | "failed", buildId: string): Promise<void> {
   try {
     const secretRaw = Deno.env.get("FIREBASE_SERVICE_ACCOUNT_JSON");
@@ -322,6 +325,7 @@ async function sendBuildNotification(walletNumber: string, status: "success" | "
     console.error(`[check-build] FCM notification failed: build ${buildId}`, e);
   }
 }
+
 serve(async (req: Request): Promise<Response> => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
   if (req.method !== "POST") return jsonResponse({ error: "method not allowed" }, 405);
